@@ -5,6 +5,24 @@ import { getWaterSnapshot } from '../../data/mock-monitoring'
 export interface WaterQueryResult {
   total: number
   items: ReturnType<typeof getWaterSnapshot>
+  /** 数据摘要，供前端推理链路展示数据概况 */
+  dataSummary: string
+}
+
+function buildSummary(list: ReturnType<typeof getWaterSnapshot>): string {
+  if (list.length === 0) return '无匹配水质站点'
+  const sectionCount = list.filter(s => s.kind === 'section').length
+  const drinkingCount = list.filter(s => s.kind === 'drinking').length
+  const upToStandard = list.filter(s => s.status === '达标').length
+  const overCount = list.length - upToStandard
+  // 水质类别分布
+  const catCount: Record<string, number> = {}
+  for (const s of list) catCount[s.category] = (catCount[s.category] ?? 0) + 1
+  const catStr = Object.entries(catCount)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([k, v]) => `${k}(${v})`)
+    .join('、')
+  return `${list.length}个站点（断面${sectionCount}、水源地${drinkingCount}），水质：${catStr}，达标 ${upToStandard}、超标 ${overCount}`
 }
 
 /**
@@ -19,7 +37,7 @@ export const queryWaterQuality = tool(
     if (river) list = list.filter(s => s.river.includes(river))
     if (area) list = list.filter(s => s.area.includes(area.replace(/[镇区旗县]/g, '')) || s.area === area)
     if (status) list = list.filter(s => s.status === status)
-    const result: WaterQueryResult = { total: list.length, items: list }
+    const result: WaterQueryResult = { total: list.length, items: list, dataSummary: buildSummary(list) }
     return JSON.stringify(result)
   },
   {

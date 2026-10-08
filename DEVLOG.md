@@ -145,6 +145,114 @@
 
 ---
 
+## Day 3（2026-10-09）RAG 法规知识库链路 + 推理链路可解释性
+
+### ✅ 完成事项
+- **向量底层**：`server/lib/embedding.ts`（硅基流动 BAAI/bge-large-zh-v1.5，1024 维，BGE 中文查询前缀 + 429/5xx 指数退避重试）+ `server/lib/vector-store.ts`（Pinecone upsert/query/listDocuments/deleteByDocId）
+- **文档处理**：`server/lib/text-splitter.ts`（自写递归字符分块器，返回 `{ text, offset }` 用于页码精确映射）+ `server/lib/document.ts`（unpdf 解析 PDF 带页码，按偏移二分查页，过滤扫描件空白 chunk）
+- **RAG 工具**：`server/lib/tools/rag.ts`（`search_knowledge_base`，TopK=4，相似度阈值 0.15 过滤，返回 `{ total, content, sources }` JSON）
+- **上传接口**：`server/routes/upload.ts`（multer 内存存储 → multer 文件名 Latin-1→UTF-8 修复 → 智能编码检测 UTF-8/GBK → 分块 → 入库，120s 超时，docId = `时间戳_随机后缀` 保证 Pinecone ID 纯 ASCII 且防同毫秒碰撞）
+- **文档管理**：`GET /api/documents`（按 docId 聚合，返回文件名/分块数/页数/上传时间）+ `DELETE /api/documents/:docId`（按 ID 前缀批量删除）
+- **前端上传页**：`src/views/Knowledge.vue`（拖拽上传 PDF/MD/TXT ≤20MB + 多文件队列串行上传 + 上传中 loading 动画 + 知识库文档列表 + 删除按钮 + 本次上传记录）+ App.vue 顶部 tab 切换
+- **推理链路可解释性**：`ReasoningPanel.vue` 全面优化——工具名中文化（5 个工具）+ 步骤编号 ①②③ + 耗时展示 + 失败红色状态 + 卡片可折叠 + 入参过长截断展开 + 自动滚动 + 清空按钮
+- **RAG 命中来源展示**：rag 工具返回 `sources`（文件名+页码+相似度），前端推理链路蓝色卡片展示，体现 RAG 可解释性
+- **GIS 数据摘要**：4 个 GIS 工具新增 `dataSummary` 字段（行业分布/超标数/AQI 范围/水质类别/超标率等），前端绿色卡片展示，解决"只看到返回 N 条不知道是什么数据"的问题
+- **测试数据**：`test-data/` 下载 3 份真实法规 PDF + 生成 3 份 MD 法规文本（大气污染防治法/土壤污染防治法/噪声污染防治法），已加入 .gitignore
+- **Pinecone**：创建 index `ai-env-agent`（1024 维 / cosine / aws us-east-1 serverless），清理扫描件垃圾数据
+- **质量加固**：完成 P0-P3 全部漏洞修复（同名覆盖、死循环守卫、页码错位、无重试、无超时、ASCII ID、低相似度过滤、编码检测、死代码清理、docId 碰撞、JSDoc 注释、TS 可选参数）
+- 端到端验收：TXT/MD/PDF 上传入库 → 文档列表展示 → 对话检索返回带来源+页码的原文片段 → GIS 工具展示数据摘要
+
+### 🕳 踩坑记录
+
+**坑 1：硅基流动没有 `text-embedding-v3` 模型**
+- 现象：按 plan.md 用 `text-embedding-v3`，接口返回 model not found
+- 根因：硅基流动平台实际可用的中文 embedding 模型是 `BAAI/bge-large-zh-v1.5`（plan.md 也提到了这个，但先试了 text-embedding-v3）
+- 解法：切换到 `BAAI/bge-large-zh-v1.5`，验证维度确实是 1024
+- 面试一句话：*"LLM 平台的模型名以平台控制台为准，文档里提到的可能是别名或已下线，先调一次 list models 再写死"*
+
+**坑 2：BGE 模型查询必须加中文前缀**
+- 现象：直接对 query 做 embedding 后检索，相似度普遍偏低，相关文档排不到前面
+- 根因：BGE 系列模型训练时查询和文档用了不同的前缀，中文查询必须加 `为这个句子生成表示以用于检索相关文章：`
+- 解法：`embedQuery` 函数自动拼接前缀，`embedTexts`（入库）不加
+- 面试一句话：*"embedding 模型的 query 和 passage 通常不对称，必须查官方文档看是否需要加前缀，否则检索效果腰斩"*
+
+**坑 3：Pinecone v9 upsert 签名变更**
+- 现象：`index.upsert(records[])` 报 `Must pass in at least 1 record`
+- 根因：v9 SDK 把签名从 `upsert(records)` 改成了 `upsert({ records })`，直接传数组会被当成 options 对象
+- 解法：改为 `index.upsert({ records })`
+- 面试一句话：*"SDK 大版本升级先查 breaking changes，尤其是方法签名从位置参数变对象参数这种"*
+
+**坑 4：Pinecone vector ID 必须 ASCII，中文文件名直接报错**
+- 现象：上传中文文件名 PDF，报 `Vector ID must be ASCII, but got 'xxx_æ±¡æ°´...'`
+- 根因：Pinecone serverless index 要求 vector ID 只能是 ASCII 字符，中文文件名拼进 ID 会被拒绝
+- 解法：ID 用纯 ASCII 的 `docId`（时间戳+随机后缀），原始文件名存 metadata.source 供展示；listDocuments 按 docId 分组而非 source
+- 面试一句话：*"向量库的 ID 字段通常有限制（ASCII/长度），业务标识和存储 ID 要解耦，ID 用内部生成的唯一标识，业务字段放 metadata"*
+
+**坑 5：langchain 1.x 移除了 text_splitter 子路径**
+- 现象：`import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter'` 报模块找不到
+- 根因：langchain 1.x 重构了导出路径，text_splitter 不再作为顶级子路径
+- 解法：不自装 `@langchain/textsplitters`，自己写一个递归字符分块器（约 100 行），面试还能讲清分块原理
+- 面试一句话：*"依赖包升级导致子路径导出消失时，要么找新路径要么自实现——分块器逻辑不复杂，自写反而可控且能讲原理"*
+
+**坑 6：unpdf 要求 Uint8Array 而非 Buffer**
+- 现象：`extractText(buffer)` 类型检查报错
+- 根因：unpdf 的类型声明要求 `Uint8Array`，Node Buffer 虽是子类但被严格类型检查拦截
+- 解法：显式 `new Uint8Array(buffer)` 转换
+- 面试一句话：*"Node Buffer 是 Uint8Array 的子类，但 TS 结构类型系统不自动兼容，跨库传参时需显式转换"*
+
+**坑 7：Pinecone listPaginated 的 limit 上限是 100 不是 1000**
+- 现象：`listPaginated({ limit: 1000 })` 报 `Limit must be greater than 0 and less than or equal to 100`
+- 根因：listPaginated 单次最多返回 100 条，fetch 才是 1000
+- 解法：listPaginated 用 limit=100 分页，fetch 批量用 1000
+- 面试一句话：*"Pinecone 的 list 和 fetch 批量上限不一样（100 vs 1000），别想当然用同一个数"*
+
+**坑 8：indexOf 页码映射在重叠文本中定位错误**
+- 现象：分块后用 `fullText.indexOf(chunkText)` 找起始位置，部分 chunk 映射到错误页码
+- 根因：分块器有 overlap，相邻 chunk 文本重叠，indexOf 从 searchFrom 开始找可能命中错误位置；PDF 页眉页脚重复也会干扰
+- 解法：改造分块器返回每个 chunk 的 `offset`（在原始全文中的起始字符偏移），直接用 offset 二分查页码表，彻底不用 indexOf
+- 面试一句话：*"带 overlap 的分块不能用 indexOf 定位原始位置，必须在分块时记录偏移，否则页码/位置溯源会错位"*
+
+**坑 9：multer 中文文件名乱码**
+- 现象：上传中文文件名 PDF，知识库列表显示 `æ°´æ±¡æ³æ±é防æ³•.pdf` 乱码
+- 根因：multer 解析 multipart 的 filename 字段时默认用 Latin-1 解码，而浏览器实际上传的是 UTF-8 字节
+- 解法：`fixFilename()` 把 Latin-1 字符串按字节转回 Buffer 再用 UTF-8 解码，检测到替换字符 U+FFFD 则回退原名
+- 面试一句话：*"multipart 文件名编码是经典坑：multer 默认 Latin-1，浏览器发 UTF-8，需要手动转码并检测替换字符做兜底"*
+
+**坑 10：扫描版 PDF 提取出空文本，入库垃圾数据**
+- 现象：上传《大气污染物综合排放标准》PDF（扫描件），分块全是空字符串，检索命中但内容空白无法回答
+- 根因：unpdf 只能提取文字型 PDF，扫描件（图片型）提取出的全是空文本
+- 解法：分块后过滤 `text.trim().length === 0` 的 chunk；若全部为空则返回 400 并提示"该 PDF 可能是扫描件，请使用文字版或转 MD/TXT"
+- 面试一句话：*"PDF 解析必须做空文本检测——扫描件会静默产生空向量，污染知识库且检索返回空白内容"*
+
+**坑 11：Pinecone serverless 最终一致性，刚入库就查不到**
+- 现象：上传成功后立即刷新文档列表，有时看不到刚上传的文档，用户以为没成功又传一次导致重复
+- 根因：Pinecone serverless 索引有最终一致性延迟（通常几百毫秒），upsert 后立即 list 可能查不到
+- 解法：上传全部完成后 `setTimeout(fetchKnowledgeDocs, 500)` 延迟刷新，规避一致性窗口
+- 面试一句话：*"serverless 向量库是最终一致性的，写入后立即读取可能查不到，需要短暂延迟或轮询重试"*
+
+**坑 12：RAG 相似度阈值 0.3 过高导致漏召回**
+- 现象：知识库有相关文档但检索返回 0 条，LLM 回答"知识库暂无相关内容"
+- 根因：BGE-large-zh-v1.5 的相关文档相似度分数常在 0.2-0.5 区间，0.3 阈值会漏掉边界相关的片段
+- 解法：阈值从 0.3 调低到 0.15，宁可多召回也不漏掉；同时返回诊断信息（原始命中数+最高分）帮助排查
+- 面试一句话：*"相似度阈值要根据实际 embedding 模型的分数分布调参，不能凭直觉设 0.5/0.7——BGE 中文模型相关分数普遍在 0.2-0.5"*
+
+**坑 13：同毫秒多文件上传 docId 碰撞导致向量覆盖**
+- 现象：一次选多个文件快速上传时，部分文件的向量被覆盖（docId = Date.now() 同毫秒相同）
+- 根因：`docId = String(Date.now())` 精度只到毫秒，串行上传快的文件可能同毫秒
+- 解法：`docId = \`${Date.now()}_${Math.random().toString(36).slice(2,8)}\``，加 6 位随机后缀
+- 面试一句话：*"时间戳作为唯一 ID 在高并发/快速串行场景下会碰撞，必须加随机后缀或用 UUID"*
+
+### 📐 设计偏差（PLAN 没想到的）
+1. **embedding 不走 LangChain 封装，直接 fetch 调硅基流动**：项目风格是"手写循环、去封装"，embedding 本质是一次 HTTP 调用，直接 fetch 零额外依赖且可控
+2. **向量库用原生 Pinecone SDK 而非 @langchain/pinecone**：自己写 `upsertChunks`/`queryChunks`，面试能讲清"embedding → Pinecone 存/查"每一步
+3. **分块器自写而非引入 @langchain/textsplitters**：langchain 1.x 路径变更 + 自写可控，还能讲清递归分隔符优先级算法
+4. **Pinecone index 维度与 embedding 模型绑定**：硅基流动 BGE 是 1024 维，建 index 时 dimension 必须填 1024，建错要重建
+5. **上传接口同步处理 + 120s 超时**：政策 PDF 几十页，解析+embedding+入库约 5-30s，同步够用但必须有超时防连接挂死
+6. **推理链路是面试演示的核心卖点**：不仅要"能调工具"，还要展示调了什么工具、返回了什么数据、数据来自哪个文件哪一页——可解释性是 Agent 类项目的差异化亮点
+7. **GIS 工具和 RAG 工具的可视化策略不同**：RAG 展示"命中来源"（文件名+页码+相似度），GIS 展示"数据摘要"（行业分布/AQI 范围/超标率），都是为了让非技术面试官一眼看懂工具返回了什么
+
+---
+
 <!--
 每日小节模板（复制使用）：
 

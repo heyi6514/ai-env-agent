@@ -5,6 +5,26 @@ import { getVehicleSnapshot } from '../../data/mock-monitoring'
 export interface VehicleQueryResult {
   total: number
   items: ReturnType<typeof getVehicleSnapshot>
+  /** 数据摘要，供前端推理链路展示数据概况 */
+  dataSummary: string
+}
+
+function buildSummary(list: ReturnType<typeof getVehicleSnapshot>): string {
+  if (list.length === 0) return '无匹配遥测点位'
+  const totalTested = list.reduce((sum, s) => sum + s.tested, 0)
+  const totalExceeded = list.reduce((sum, s) => sum + s.exceeded, 0)
+  const avgRate = totalTested > 0 ? ((totalExceeded / totalTested) * 100).toFixed(1) : '0'
+  // 主要超标车型
+  const vehicleCount: Record<string, number> = {}
+  for (const s of list) {
+    if (s.mainVehicleType) vehicleCount[s.mainVehicleType] = (vehicleCount[s.mainVehicleType] ?? 0) + 1
+  }
+  const topVehicles = Object.entries(vehicleCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([k]) => k)
+    .join('、')
+  return `${list.length}个点位，检测 ${totalTested} 辆，超标 ${totalExceeded} 辆，平均超标率 ${avgRate}%，主要车型：${topVehicles || '无'}`
 }
 
 /**
@@ -25,7 +45,7 @@ export const queryVehicleSensing = tool(
           s.mainPollutant.toLowerCase().includes(k)
       )
     }
-    const result: VehicleQueryResult = { total: list.length, items: list }
+    const result: VehicleQueryResult = { total: list.length, items: list, dataSummary: buildSummary(list) }
     return JSON.stringify(result)
   },
   {

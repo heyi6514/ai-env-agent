@@ -6,10 +6,39 @@ import type { PollutionSource } from '../../data/mock-sources'
 export interface GisQueryResult {
   total: number
   items: PollutionSource[]
+  /** 数据摘要，供前端推理链路展示数据概况 */
+  dataSummary: string
+}
+
+function buildSummary(list: PollutionSource[]): string {
+  if (list.length === 0) return '无匹配污染源'
+  // 行业分布
+  const industryCount: Record<string, number> = {}
+  for (const s of list) industryCount[s.industry] = (industryCount[s.industry] ?? 0) + 1
+  const topIndustries = Object.entries(industryCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([k, v]) => `${k}(${v})`)
+    .join('、')
+  const overCount = list.filter(s => s.status === '超标').length
+  // 主要污染物
+  const pollutantCount: Record<string, number> = {}
+  for (const s of list) {
+    for (const p of s.pollutant.split(/[、,，]/)) {
+      const key = p.trim()
+      if (key) pollutantCount[key] = (pollutantCount[key] ?? 0) + 1
+    }
+  }
+  const topPollutants = Object.entries(pollutantCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([k]) => k)
+    .join('、')
+  return `${list.length}个污染源，行业：${topIndustries}，超标 ${overCount} 个，主要污染物：${topPollutants}`
 }
 
 function fmt(list: PollutionSource[]): GisQueryResult {
-  return { total: list.length, items: list }
+  return { total: list.length, items: list, dataSummary: buildSummary(list) }
 }
 
 /**

@@ -1,10 +1,16 @@
+export interface ToolSource {
+  source: string
+  page: number | null
+  score: number
+}
+
 export interface SSEHandlers {
   onMessage: (content: string) => void
   onError?: (message: string) => void
   onDone?: () => void
   /** Day 2：Agent 工具调用事件（推理链路展示用） */
   onToolStart?: (id: string, name: string, args: unknown) => void
-  onToolEnd?: (id: string, name: string, summary: string) => void
+  onToolEnd?: (id: string, name: string, summary: string, sources?: ToolSource[], dataSummary?: string) => void
 }
 
 /**
@@ -58,7 +64,7 @@ export async function fetchSSE(
         else if (event === 'tool_start')
           handlers.onToolStart?.(payload.id, payload.name, payload.args)
         else if (event === 'tool_end')
-          handlers.onToolEnd?.(payload.id, payload.name, payload.summary)
+          handlers.onToolEnd?.(payload.id, payload.name, payload.summary, payload.sources, payload.dataSummary)
       } catch {
         // 忽略非法 JSON 块
       }

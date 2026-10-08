@@ -24,7 +24,7 @@ import ReasoningPanel from '../components/ReasoningPanel.vue'
 <style scoped>
 .workbench {
   display: flex;
-  height: 100vh;
+  height: 100%;
 }
 .left {
   flex: 1;
@@ -39,9 +39,16 @@ import ReasoningPanel from '../components/ReasoningPanel.vue'
   flex-direction: column;
 }
 .panel {
-  flex: 1;
   padding: 12px;
   overflow-y: auto;
+}
+/* 推理链路占更大空间，地图未接入前给推理链路更多展示区 */
+.panel:first-child {
+  flex: 2;
+}
+.panel:last-child {
+  flex: 1;
+  min-height: 160px;
 }
 .panel + .panel {
   border-top: 1px solid var(--el-border-color);

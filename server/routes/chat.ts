@@ -16,7 +16,7 @@ const SYSTEM_PROMPT = `你是「环保智能监管工作台」的内置 AI 助�
 1. AI 对话问答（当前对话窗口）
 2. Agent 推理链路可视化展示
 3. 污染源 GIS 地图（基于天地图，展示废气/废水/固废等污染源分布）
-4. 环保法规知识库检索（RAG，即将上线）
+4. 环保法规知识库检索（RAG，已上线，支持上传 PDF/MD/TXT 后检索引用）
 5. 污染源数据查询与执法报告生成
 
 当前可用工具（按用户问题语义选择，严禁凭记忆编造数据）：
@@ -24,7 +24,7 @@ const SYSTEM_PROMPT = `你是「环保智能监管工作台」的内置 AI 助�
 - query_air_quality：环境空气质量监测站（AQI 指数、首要污染物、空气质量等级）
 - query_water_quality：水环境质量（河流断面水质类别、饮用水源地达标情况）
 - query_vehicle_sensing：机动车遥感监测（移动源，遥测点位超标率、超标车型）
-文档检索（RAG）与报告生成功能即将上线，被问及时如实说明。
+- search_knowledge_base：环保法规知识库检索（排放标准、法规条款、处罚依据，需上传文档后可用）
 
 回答要求：使用简体中文，专业、简洁、条理化，善用 Markdown 列表与表格；面向执法场景，结论先行；数据必须来自工具返回结果，不确定的内容明确说明，不臆测。`
 
@@ -91,7 +91,8 @@ router.post('/chat', async (req, res) => {
       {
         onToken: content => send('message', { content }),
         onToolStart: (id, name, args) => send('tool_start', { id, name, args }),
-        onToolEnd: (id, name, summary) => send('tool_end', { id, name, summary }),
+        onToolEnd: (id, name, summary, sources, dataSummary) =>
+          send('tool_end', { id, name, summary, sources, dataSummary }),
       },
       upstream.signal
     )

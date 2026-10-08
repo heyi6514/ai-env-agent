@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { fetchSSE } from '../composables/useSSE'
+import { fetchSSE, type ToolSource } from '../composables/useSSE'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -12,7 +12,16 @@ export interface ToolEvent {
   name: string
   args?: unknown
   summary?: string
+  sources?: ToolSource[]
+  /** GIS 工具返回的数据摘要，RAG 工具为空 */
+  dataSummary?: string
   status: 'running' | 'done'
+  /** 工具执行是否失败（summary 为"执行失败"时标记，用于红色展示） */
+  error?: boolean
+  /** 工具开始时间戳，用于计算耗时 */
+  startTime: number
+  /** 工具耗时（毫秒），结束时填入 */
+  duration?: number
 }
 
 interface UpstreamMessage {
@@ -68,15 +77,19 @@ export const useChatStore = defineStore('chat', {
               reply.content += chunk
             },
             onToolStart: (id, name, args) => {
-              this.toolEvents.push({ id, name, args, status: 'running' })
+              this.toolEvents.push({ id, name, args, status: 'running', startTime: Date.now() })
             },
-            onToolEnd: (id, _name, summary) => {
+            onToolEnd: (id, _name, summary, sources, dataSummary) => {
               const ev =
                 this.toolEvents.find(e => e.id === id && e.status === 'running') ??
                 this.toolEvents[this.toolEvents.length - 1]
               if (ev) {
                 ev.status = 'done'
                 ev.summary = summary
+                ev.sources = sources
+                ev.dataSummary = dataSummary
+                ev.duration = Date.now() - ev.startTime
+                ev.error = summary === '执行失败'
               }
             },
             onError: msg => {

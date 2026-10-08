@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import express from 'express'
 import chatRouter from './routes/chat'
+import uploadRouter from './routes/upload'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -18,6 +19,7 @@ app.get('/api/health', (_req, res) => {
 })
 
 app.use('/api', chatRouter)
+app.use('/api', uploadRouter)
 
 // 未知 API 路由返回 404（必须放在业务路由之后）
 app.use('/api', (_req, res) => {

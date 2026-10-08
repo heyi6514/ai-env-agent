@@ -5,6 +5,35 @@ import { getAirSnapshot } from '../../data/mock-monitoring'
 export interface AirQueryResult {
   total: number
   items: ReturnType<typeof getAirSnapshot>
+  /** 数据摘要，供前端推理链路展示数据概况 */
+  dataSummary: string
+}
+
+function buildSummary(list: ReturnType<typeof getAirSnapshot>): string {
+  if (list.length === 0) return '无匹配监测站'
+  const aqiVals = list.map(s => s.aqi)
+  const minAqi = Math.min(...aqiVals)
+  const maxAqi = Math.max(...aqiVals)
+  // 等级分布
+  const levelCount: Record<string, number> = {}
+  for (const s of list) levelCount[s.level] = (levelCount[s.level] ?? 0) + 1
+  const levelStr = Object.entries(levelCount)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k}(${v})`)
+    .join('、')
+  // 首要污染物
+  const pollutantCount: Record<string, number> = {}
+  for (const s of list) {
+    if (s.primaryPollutant && s.primaryPollutant !== '—') {
+      pollutantCount[s.primaryPollutant] = (pollutantCount[s.primaryPollutant] ?? 0) + 1
+    }
+  }
+  const topPollutants = Object.entries(pollutantCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([k]) => k)
+    .join('、')
+  return `${list.length}个监测站，AQI ${minAqi}~${maxAqi}，等级：${levelStr}，首要污染物：${topPollutants || '无'}`
 }
 
 /**
@@ -25,7 +54,7 @@ export const queryAirQuality = tool(
           s.primaryPollutant.toLowerCase().includes(k)
       )
     }
-    const result: AirQueryResult = { total: list.length, items: list }
+    const result: AirQueryResult = { total: list.length, items: list, dataSummary: buildSummary(list) }
     return JSON.stringify(result)
   },
   {

@@ -45,7 +45,7 @@ I should keep it comprehensive but organized. This is a markdown file so the lan
 | Agent 推理链路可视化 | Agent 执行链路 | 思考→选工具→入参→返回 时序卡片（**核心亮点**） |
 | RAG 政策知识库 | RAG / 向量库 | PDF/MD 上传→分块→embedding→检索→原文溯源 |
 | OpenLayers 地图联动 | WebGIS | 点位渲染/状态色/弹窗/视口自动定位 |
-| 密钥服务端代理 | 前端安全 | Express 服务端 .env 环境变量，前端不暴露 Key |
+| 密钥服务端代理 | 前端安全 | Vercel Function 环境变量，前端不暴露 Key |
 
 ### ⚠️ 极简实现
 
@@ -76,10 +76,9 @@ I should keep it comprehensive but organized. This is a markdown file so the lan
 | Agent 框架 | `langchain@0.3.x` + `@langchain/community@0.3.x`（**锁版本，勿装最新**） | Agent + 工具 + callbacks |
 | Embedding | 硅基流动 `text-embedding-v3`（1024 维）或通义 `text-embedding-v2`（1536 维） | DeepSeek 无自家 embedding |
 | 向量库 | Pinecone 免费档（统一本地+线上） | 建 index 时维度必须与 embedding 一致 |
-| PDF 解析 | `unpdf`（备选 `pdf-parse`） | Node 环境友好，无 Serverless 超时限制 |
+| PDF 解析 | `unpdf`（备选 `pdf-parse`） | Vercel Node runtime 友好 |
 | 文本分块 | `langchain/text_splitter` 的 `RecursiveCharacterTextSplitter` | 现成 |
-| 后端 | Express 4 + Node 20 | 单服务承载全部 API，SSE 用 res.write |
-| 部署 | 阿里云服务器（nginx + pm2） | 已备案域名 + 免费 SSL，国内访问快 |
+| 部署 | Vercel（Edge + Node Serverless 混合） | 见 §3 运行时分工 |
 
 ---
 
@@ -90,8 +89,7 @@ Browser (Vue3 SPA)
   ├─ 对话区(左)  ├─ 推理链路面板(右上)  ├─ OpenLayers 地图(右下)
         │ POST /api/chat (SSE)
         ▼
-nginx :80 ──静态──→ dist/（vite build 产物）──/api/* 反代──→ Express :3000（pm2 常驻）
-/api/chat  ──→ LangChain Agent(deepseek-chat)，SSE 用 res.write
+/api/chat  [Edge runtime] ──→ LangChain Agent(deepseek-chat)
                                 ├─ Tool1 rag_search    → /api/query-vector
                                 ├─ Tool2 gis_query     → 本地 mock 数据
                                 ├─ Tool3 monitor_stat  → 本地 mock 统计
@@ -102,10 +100,10 @@ nginx :80 ──静态──→ dist/（vite build 产物）──/api/* 反代�
 /api/query-vector [Node runtime] → Pinecone 检索 TopK
 ```
 
-**运行时说明（比 Serverless 简单）**：
-- 单一 Node 进程承载全部 API，无需 Edge/Node 运行时拆分，无 60s 超时限制
-- SSE 直接 `res.write` + `Content-Type: text/event-stream` + `flushHeaders()`
-- 本地开发 Vite proxy 把 /api 转发到 :3000，线上由 nginx 反代，前端代码零改动
+**运行时分工（关键，勿混）**：
+- `api/chat.ts` → **Edge**（SSE 流式）
+- `api/upload.ts` / `api/query-vector.ts` → **Node**（Pinecone SDK、PDF 解析需要 Node API，Edge 跑不了）
+- `vercel.json` 中为 upload/query-vector 配 `maxDuration: 60`
 
 ---
 
@@ -130,11 +128,10 @@ event: done           data: {}
 
 ```
 ai-env-agent/
-├── server/                       # Express 后端（阿里云 pm2 常驻）
-│   ├── index.ts                  # 入口：路由 + 生产托管 dist/
-│   ├── routes/chat.ts            # SSE Agent 对话
-│   ├── routes/upload.ts          # 文档处理入库
-│   ├── routes/query-vector.ts    # RAG 检索
+├── api/                          # Vercel Serverless
+│   ├── chat.ts                   # Edge, SSE Agent 对话
+│   ├── upload.ts                 # Node, 文档处理入库
+│   ├── query-vector.ts           # Node, RAG 检索
 │   └── lib/
 │       ├── agent.ts              # LangChain Agent + 4 工具注册
 │       ├── tools/{rag,gis,monitor,report}.ts
@@ -176,9 +173,9 @@ interface Message {
 - [ ] 读 DeepSeek Function Calling 文档 30 分钟，fetch 跑通流式 chat
 - [ ] `pnpm create vite ai-env-agent --template vue-ts`，装 Pinia/ElementPlus/Tailwind/OpenLayers
 - [ ] 搭工作台三栏布局（对话/推理/地图占位）
-- [ ] 写 `server/routes/chat.ts`(Express SSE) + 前端 `useSSE.ts`，无 Agent 纯聊天
+- [ ] 写 `api/chat.ts`(Edge SSE) + 前端 `useSSE.ts`，无 Agent 纯聊天
 - [ ] **验收：页面流式聊天 OK**
-- 坑：必须设 `Content-Type: text/event-stream` 并 `res.flushHeaders()`；DeepSeek 流是 `data:{...}\n\n` 格式
+- 坑：Edge 用 `ReadableStream` 不用 `res.write`；DeepSeek 流是 `data:{...}\n\n` 格式
 
 ### Day 2｜Agent 最小闭环（单工具 GIS）
 - [ ] LangChain.js Quickstart + Agent 章节速读，跑官方 demo
@@ -192,7 +189,7 @@ interface Message {
 ### Day 3｜RAG 工具
 - [ ] 建 Pinecone index（维度与 embedding 模型一致！）
 - [ ] `vector-store.ts` 封装，手动塞文本→查询→返回片段
-- [ ] `server/routes/upload.ts`：unpdf 解析→Splitter(500/50)→embedding→入库
+- [ ] `api/upload.ts`：unpdf 解析→Splitter(500/50)→embedding→入库
 - [ ] `ragTool` 接入 Agent，双工具跑通
 - [ ] **验收：上传政策 PDF 后问限值，能引用原文回答**
 - 坑：embedding 批量入库要限速 sleep；Pinecone 冷启动 5-10s 属正常
@@ -222,7 +219,7 @@ interface Message {
 ### Day 7｜收尾 + 部署 + 简历
 - [ ] 单会话 LocalStorage 持久化/清空/复制/停止生成(AbortController)/空态错误态
 - [ ] Knowledge 上传页（极简）
-- [ ] 部署：服务器装 Node20/pm2/nginx → pm2 启动 server → vite build 上传 dist → nginx 静态+反代 → 域名解析 + 免费 SSL → 自测全流程
+- [ ] Vercel 环境变量 + vercel.json runtime 配置，部署并自测全流程
 - [ ] README：架构 Mermaid + 4 张截图 + 启动步骤 + demo 链接
 - [ ] 简历加"个人技术 Demo 项目"（用 PRD 第六节文案）
 - [ ] **验收：发给朋友点开链接能跑通**
@@ -257,7 +254,7 @@ xcopy Environmental-IISS-Web\src\assets\gis\map-icon ai-env-agent\src\assets\gis
 | Day 5 推理面板事件流不通 | 只展示 `tool_start`/`tool_end` 两种事件，去掉 agent_thought |
 | Day 6 晚 OpenLayers 没渲染出来 | 改 el-table 点位列表，简历话术改"地理数据列表展示" |
 | Pinecone 各种折腾不通 | 本地 vectra 开发，部署若失败 demo 录屏代替在线链接 |
-| unpdf/pdf-parse 解析报错 | 换另一个；仍不行则只支持 .md 上传 |
+| unpdf/pdf-parse 在 Vercel 报错 | 换另一个；仍不行则只支持 .md 上传 |
 | LangChain 文档对不上 | 以 node_modules 实际类型定义为准 |
 
 ---
@@ -269,14 +266,14 @@ xcopy Environmental-IISS-Web\src\assets\gis\map-icon ai-env-agent\src\assets\gis
 3. 三个灵魂问题背熟：
    - Agent vs 直接调 API？→ Function Calling 多工具调度 + RAG 溯源
    - RAG 怎么切分/TopK 怎么定？→ chunkSize=500/overlap=50/TopK=4 + 实测调优说法
-   - 密钥怎么不泄露？→ Node 服务端 .env 环境变量代理，前端零密钥
+   - 密钥怎么不泄露？→ Vercel Function 环境变量服务端代理
 4. mock 数据不要含公司项目真实数据；key 不进仓库（`.env.example` + `.gitignore`）
 
 ---
 
 ## 10. 今天就做的 5 件事
 
-1. 注册 DeepSeek(充值)/Pinecone/硅基流动（部署用自己阿里云服务器，无需 Vercel）
+1. 注册 DeepSeek(充值)/Pinecone/硅基流动/Vercel
 2. Github 新建公开仓库 `ai-env-agent`
 3. `cd d:\2026\work\clx_project && pnpm create vite ai-env-agent --template vue-ts`
 4. 执行 §7 的资产拷贝命令
@@ -288,7 +285,7 @@ xcopy Environmental-IISS-Web\src\assets\gis\map-icon ai-env-agent\src\assets\gis
 
 做到哪天卡住，新会话直接说：
 > 先读 PLAN.md，我在 Day X 的【某步骤】卡住了，帮我输出【A/B/C/D/E】的完整代码：
-> A: server/routes/chat.ts(Express SSE) + useSSE.ts　B: agent.ts + gisTool + mock 数据
+> A: chat.ts(Edge SSE) + useSSE.ts　B: agent.ts + gisTool + mock 数据
 > C: upload.ts + ragTool + vector-store.ts　D: callbacks→SSE 桥接 + AgentTrace.vue
 > E: MapPanel.vue（点位渲染/弹窗/视口定位）
 ````

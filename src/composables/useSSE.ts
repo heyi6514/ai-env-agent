@@ -1,0 +1,62 @@
+export interface SSEHandlers {
+  onMessage: (content: string) => void
+  onError?: (message: string) => void
+  onDone?: () => void
+}
+
+/**
+ * POST 方式消费 SSE 流。
+ * 不用 EventSource：它只支持 GET、不能携带 JSON body，对话接口必须 POST 历史消息。
+ */
+export async function fetchSSE(
+  url: string,
+  body: unknown,
+  handlers: SSEHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+
+  if (!resp.ok || !resp.body) {
+    handlers.onError?.(`请求失败：HTTP ${resp.status}`)
+    handlers.onDone?.()
+    return
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finished = false
+
+  while (!finished) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // SSE 事件以空行分隔
+    const blocks = buffer.split('\n\n')
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      let event = 'message'
+      let data = ''
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data += line.slice(5).trim()
+      }
+      if (!data) continue
+      try {
+        const payload = JSON.parse(data)
+        if (event === 'message') handlers.onMessage(payload.content ?? '')
+        else if (event === 'error') handlers.onError?.(payload.message ?? '未知错误')
+        else if (event === 'done') finished = true
+      } catch {
+        // 忽略非法 JSON 块
+      }
+    }
+  }
+
+  handlers.onDone?.()
+}

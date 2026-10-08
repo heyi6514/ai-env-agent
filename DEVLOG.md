@@ -92,19 +92,41 @@
 
 ---
 
-## Day 2（待开）LangChain Agent + GIS 单工具
+## Day 2（2026-10-08）LangChain Agent 最小闭环 + GIS 单工具
 
-### 待办
-- [ ] 读 DeepSeek Function Calling 文档 30 分钟（Day 2 硬前置，尚未完成）
-- [ ] LangChain Agent 最小闭环（ChatDeepSeek）
-- [ ] 工具 1：GIS 污染源查询（mock 30 条点位）
-- [ ] 推理链路面板雏形
+### ✅ 完成事项
+- Day 1 收尾加固：服务端过滤消息角色（防伪造 system 注入）、Express 404 兜底 + 统一错误中间件（body-parser 400 语义化）
+- 依赖：`langchain` + `@langchain/core` + `@langchain/deepseek` + `zod@3`
+- `server/data/mock-sources.ts`：30 条点位（准格尔旗真实镇名，字段与 Day 6 地图联动对齐，status 由 value>limit 动态计算保证数据自洽）
+- `server/lib/tools/gis.ts`：`query_pollution_sources` 工具（zod schema，支持 town/type/status/keyword 组合过滤）
+- `server/lib/agent.ts`：**手写 tool-calling 循环**（ChatDeepSeek + bindTools + stream 聚合 chunk 判断 tool_calls），MAX_TOOL_ROUNDS=5 防循环
+- `chat.ts` 重构为 Agent→SSE 翻译层：新增 `tool_start`/`tool_end` 事件；60s 整体超时；区分"客户端断开"与"服务端超时"
+- 前端：useSSE 扩展工具事件 → store `toolEvents` → `ReasoningPanel.vue` 推理链路时间线（执行中 spinner → 完成态 summary）
+- 端到端验收通过：curl 实测 `tool_start(args: {town:沙圪堵镇, type:air, status:超标})` → `tool_end(返回 3 条)` → 464 个流式 token → done，无 error
 
 ### 🕳 踩坑记录
-（待填）
 
-### 📐 设计偏差
-（待填）
+**坑 1：PowerShell 传 JSON 给 curl.exe 双引号被吞，后端被冤枉 500**
+- 现象：curl 测 /api/chat 返回 500，服务器日志报 JSON parse 失败，body 变成 `{messages:[{role:user...}]}`
+- 根因：PowerShell 向原生命令传参时 `"$body"` 内的 `"` 不会自动转义，到达服务器的 JSON 缺引号
+- 解法：body 写入临时文件用 `--data-binary "@file.json"` 传递
+- 面试一句话：*"Windows 下用 curl 测 JSON 接口务必走文件传参，PowerShell 的引号转发规则会静默破坏请求体"*
+
+**坑 2：3000 端口被旧 dev:server 占用（EADDRINUSE）+ pnpm 重装后旧进程模块失效**
+- 现象：新起后端报 EADDRINUSE 退出；打到旧进程的请求返回 500
+- 根因：安装 langchain 时 pnpm 重排了 node_modules，长驻旧进程持有的模块句柄部分失效
+- 解法：`Get-NetTCPConnection -LocalPort 3000` 找 PID 后 `Stop-Process`，重启干净进程
+- 面试一句话：*"pnpm 装完依赖必须重启 dev 进程——node_modules 是符号链接重排，旧进程可能拿着已失效的模块句柄"*
+
+**坑 3：chat 流式接口对非法 JSON 返回 500 而非 400**
+- 根因：body-parser 解析失败走 next(err)，统一错误中间件无脑 500
+- 解法：中间件读取 `err.status`（body-parser 抛 400 语义错误），按状态码返回并区分日志级别
+- 面试一句话：*"统一错误中间件要尊重中间件抛出的状态码，非法请求体返回 500 会误导排查方向"*
+
+### 📐 设计偏差（PLAN 没想到的）
+1. **不用 AgentExecutor，手写 tool-calling 循环**：AgentExecutor 已被 0.3 标 deprecated，LangGraph 又引入额外概念；手写 `while(has tool_calls)` 约 60 行，事件时序完全可控，面试还能讲清 Agent 本质
+2. **思考模式必须在 modelKwargs 显式关闭**：ChatDeepSeek 没有直接的 thinking 参数，通过 `modelKwargs: { thinking: { type: 'disabled' } }` 透传 DeepSeek 专有字段
+3. **工具事件协议**：SSE 新增 `tool_start`/`tool_end` 事件（含 id/name/args/summary），Day 4 只需在 payload 里补 reasoning 字段即可升级推理链路，前端解析器零改动
 
 ---
 

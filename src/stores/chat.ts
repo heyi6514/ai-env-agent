@@ -7,6 +7,14 @@ export interface ChatMessage {
   ts: number
 }
 
+export interface ToolEvent {
+  id: string
+  name: string
+  args?: unknown
+  summary?: string
+  status: 'running' | 'done'
+}
+
 interface UpstreamMessage {
   role: 'user' | 'assistant'
   content: string
@@ -15,6 +23,8 @@ interface UpstreamMessage {
 export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [] as ChatMessage[],
+    /** 当前回答的工具调用事件（推理链路面板数据源，每次提问前清空） */
+    toolEvents: [] as ToolEvent[],
     sending: false,
     controller: null as AbortController | null,
   }),
@@ -25,6 +35,7 @@ export const useChatStore = defineStore('chat', {
 
       this.messages.push({ role: 'user', content, ts: Date.now() })
       this.messages.push({ role: 'assistant', content: '', ts: Date.now() })
+      this.toolEvents = []
       await this.streamReply()
     },
 
@@ -36,6 +47,7 @@ export const useChatStore = defineStore('chat', {
       const history = this.toHistory()
       if (history.length === 0 || history[history.length - 1].role !== 'user') return
       this.messages.push({ role: 'assistant', content: '', ts: Date.now() })
+      this.toolEvents = []
       await this.streamReply()
     },
 
@@ -54,6 +66,18 @@ export const useChatStore = defineStore('chat', {
           {
             onMessage: chunk => {
               reply.content += chunk
+            },
+            onToolStart: (id, name, args) => {
+              this.toolEvents.push({ id, name, args, status: 'running' })
+            },
+            onToolEnd: (id, _name, summary) => {
+              const ev =
+                this.toolEvents.find(e => e.id === id && e.status === 'running') ??
+                this.toolEvents[this.toolEvents.length - 1]
+              if (ev) {
+                ev.status = 'done'
+                ev.summary = summary
+              }
             },
             onError: msg => {
               reply.content += `\n\n> ⚠️ ${msg}`

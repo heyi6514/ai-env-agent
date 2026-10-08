@@ -2,6 +2,9 @@ export interface SSEHandlers {
   onMessage: (content: string) => void
   onError?: (message: string) => void
   onDone?: () => void
+  /** Day 2：Agent 工具调用事件（推理链路展示用） */
+  onToolStart?: (id: string, name: string, args: unknown) => void
+  onToolEnd?: (id: string, name: string, summary: string) => void
 }
 
 /**
@@ -52,6 +55,10 @@ export async function fetchSSE(
         if (event === 'message') handlers.onMessage(payload.content ?? '')
         else if (event === 'error') handlers.onError?.(payload.message ?? '未知错误')
         else if (event === 'done') finished = true
+        else if (event === 'tool_start')
+          handlers.onToolStart?.(payload.id, payload.name, payload.args)
+        else if (event === 'tool_end')
+          handlers.onToolEnd?.(payload.id, payload.name, payload.summary)
       } catch {
         // 忽略非法 JSON 块
       }

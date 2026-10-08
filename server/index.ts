@@ -20,8 +20,13 @@ app.use('/api', (_req, res) => {
 
 // 统一错误处理：Express 4 不会自动捕获异步异常，各路由需自行 try/catch 后 next(err)
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('[server]', err)
-  if (!res.headersSent) res.status(500).json({ message: '服务器内部错误' })
+  // body-parser 等中间件抛出的错误自带 statusCode（如非法 JSON → 400），按其状态码返回
+  const status =
+    typeof err === 'object' && err && 'status' in err
+      ? Number((err as { status: number }).status) || 500
+      : 500
+  if (status >= 500) console.error('[server]', err)
+  if (!res.headersSent) res.status(status).json({ message: status === 400 ? '请求体格式错误' : '服务器内部错误' })
 })
 
 // 生产环境托管前端构建产物（nginx 可替代，这里保留以便直接 node 访问）

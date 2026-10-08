@@ -62,6 +62,16 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
  * 本质等价于 while (finish_reason === 'tool_calls')，相比 AgentExecutor
  * 去掉了 deprecated 封装，事件时序完全可控，便于 SSE 桥接与 Day 4 推理链路展示。
  */
+
+/** 从 chunk 中提取文本 token，处理 string / text 数组两种形态 */
+function extractText(chunk: AIMessageChunk): string {
+  if (typeof chunk.content === 'string') return chunk.content
+  if (Array.isArray(chunk.content)) {
+    return chunk.content.map(p => ('text' in p ? p.text : '')).join('')
+  }
+  return ''
+}
+
 export async function runAgent(
   messages: BaseMessage[],
   cb: AgentCallbacks,
@@ -75,13 +85,8 @@ export async function runAgent(
     const chunks: AIMessageChunk[] = []
 
     for await (const chunk of stream) {
-      if (typeof chunk.content === 'string' && chunk.content) {
-        cb.onToken(chunk.content)
-      } else if (Array.isArray(chunk.content)) {
-        // 兼容多段 content（文本块数组）
-        const text = chunk.content.map(p => ('text' in p ? p.text : '')).join('')
-        if (text) cb.onToken(text)
-      }
+      const text = extractText(chunk)
+      if (text) cb.onToken(text)
       chunks.push(chunk)
     }
 
@@ -89,9 +94,10 @@ export async function runAgent(
     const merged = chunks.reduce((a, b) => a.concat(b))
     const toolCalls = merged.tool_calls?.length ? merged.tool_calls : undefined
 
+    // 模型直接返回文本回答，无工具调用 → 结束
     if (!toolCalls) return
 
-    // 先发占位 AIMessage（含 tool_calls），再逐个执行工具并追加 ToolMessage
+    // 有工具调用：追加 AIMessage(tool_calls) 占位，逐个执行工具并追加 ToolMessage
     current = [...current, merged as AIMessage]
     for (const tc of toolCalls) {
       const id = tc.id ?? `call_${round}_${Math.random().toString(36).slice(2, 8)}`
@@ -99,6 +105,16 @@ export async function runAgent(
       const { payload, summary } = await executeTool(tc.name, tc.args as Record<string, unknown>)
       cb.onToolEnd(id, tc.name, summary)
       current = [...current, new ToolMessage({ content: payload, tool_call_id: id })]
+    }
+  }
+
+  // 达到最大轮数后，若末尾仍是 ToolMessage（工具已执行但模型还没来得及总结），
+  // 再请求一次模型生成最终文字回答，避免用户只看到工具执行却没有结论。
+  if (current.length > 0 && current[current.length - 1] instanceof ToolMessage) {
+    const stream = await model.stream(current, { signal })
+    for await (const chunk of stream) {
+      const text = extractText(chunk)
+      if (text) cb.onToken(text)
     }
   }
 }

@@ -107,11 +107,11 @@ const BASE_SOURCES: PollutionSource[] = [
 export function getSourcesSnapshot(): PollutionSource[] {
   return BASE_SOURCES.map(s => {
     const ratio = s.value / s.limit
+    const [seed, ts] = bucketSeed(s.id)
     // 临界点位（含基准已超标/接近超标的）保持原值，只刷新时间
     if (ratio >= 0.85 && ratio <= 1.15) {
-      return { ...s, updatedAt: fmtTime(new Date()) }
+      return { ...s, updatedAt: fmtTime(ts) }
     }
-    const [seed, ts] = bucketSeed(s.id)
     const rnd = mulberry32(seed)
     const value = jitter(s.value, 0.1, rnd)
     return {

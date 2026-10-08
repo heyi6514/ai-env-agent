@@ -11,6 +11,12 @@ const port = Number(process.env.PORT) || 3000
 
 app.use(cors())
 app.use(express.json({ limit: '20mb' }))
+
+// 健康检查：pm2/nginx 探活与部署自检用
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', ts: Date.now() })
+})
+
 app.use('/api', chatRouter)
 
 // 未知 API 路由返回 404（必须放在业务路由之后）

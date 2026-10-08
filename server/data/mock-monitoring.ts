@@ -1,6 +1,11 @@
 // 环境质量监测 mock 数据（AQI 站点 / 水环境断面与水源地 / 机动车遥测）
 // 地域延续准格尔旗设定，坐标为 WGS84 经纬度（Day 6 地图联动预留）
 // 演示组合保证：薛家湾镇站点 PM2.5 超标（轻度污染）；十里长川流域存在劣Ⅴ类断面；G109 遥测点位超标率显著
+//
+// 数据不再静态导出：以下 BASE_* 数组仅作为基准值，
+// 通过 get*Snapshot() 按时间桶种子抖动生成动态快照（见 server/lib/simulate.ts）
+
+import { bucketSeed, calcAqi, fmtTime, jitter, mulberry32, yesterdayStr } from '../lib/simulate'
 
 // ---------- 环境空气质量（AQI） ----------
 
@@ -25,7 +30,7 @@ export interface AirStation {
   updatedAt: string
 }
 
-export const MOCK_AIR_STATIONS: AirStation[] = [
+const BASE_AIR_STATIONS: AirStation[] = [
   {
     id: 'AIR-001',
     siteName: '薛家湾镇监测站',
@@ -131,7 +136,7 @@ export interface WaterSite {
   updatedAt: string
 }
 
-export const MOCK_WATER_SITES: WaterSite[] = [
+const BASE_WATER_SITES: WaterSite[] = [
   {
     id: 'WAT-001',
     kind: 'section',
@@ -253,7 +258,7 @@ export interface VehicleSensingPoint {
   updatedAt: string
 }
 
-export const MOCK_VEHICLE_POINTS: VehicleSensingPoint[] = [
+const BASE_VEHICLE_POINTS: VehicleSensingPoint[] = [
   {
     id: 'VEH-001',
     name: 'G109 国道沙圪堵过境段遥测点',
@@ -307,3 +312,69 @@ export const MOCK_VEHICLE_POINTS: VehicleSensingPoint[] = [
     updatedAt: '2026-10-09 09:00:00',
   },
 ]
+
+// ---------- 动态快照（工具层统一走这里取数） ----------
+
+/**
+ * AQI 站点动态快照：六参数浓度按 ±15% 抖动后，
+ * 用国标 HJ 633-2012 IAQI 分段插值重算 AQI/首要污染物/等级。
+ * 真实监测站为小时级数据，时间桶粒度 1 小时。
+ */
+export function getAirSnapshot(): AirStation[] {
+  return BASE_AIR_STATIONS.map(s => {
+    const [seed, ts] = bucketSeed(s.id)
+    const rnd = mulberry32(seed)
+    const so2 = jitter(s.so2, 0.15, rnd)
+    const no2 = jitter(s.no2, 0.15, rnd)
+    const pm10 = jitter(s.pm10, 0.15, rnd)
+    const pm25 = jitter(s.pm25, 0.15, rnd)
+    const o3 = jitter(s.o3, 0.15, rnd)
+    const co = jitter(s.co, 0.15, rnd)
+    const { aqi, primaryPollutant, level } = calcAqi(pm25, pm10, so2, no2, o3, co)
+    return {
+      ...s,
+      so2,
+      no2,
+      pm10,
+      pm25,
+      o3,
+      co,
+      aqi,
+      primaryPollutant,
+      level: level as AqiLevel,
+      updatedAt: fmtTime(ts),
+    }
+  })
+}
+
+/**
+ * 水环境快照：水质类别是按日评价的枚举值，真实业务不会小时级翻转，
+ * 因此类别/达标状态保持基准值，仅刷新 updatedAt 为当前时间。
+ */
+export function getWaterSnapshot(): WaterSite[] {
+  const now = fmtTime(new Date())
+  return BASE_WATER_SITES.map(s => ({ ...s, updatedAt: now }))
+}
+
+/**
+ * 机动车遥测快照：检测量 ±10% 抖动，超标数按超标率抖动反推，
+ * 检测时段自动取"昨天 07:00-19:00"。
+ */
+export function getVehicleSnapshot(): VehicleSensingPoint[] {
+  const period = `${yesterdayStr()} 07:00-19:00`
+  return BASE_VEHICLE_POINTS.map(s => {
+    const [seed, ts] = bucketSeed(s.id)
+    const rnd = mulberry32(seed)
+    const tested = Math.round(jitter(s.tested, 0.1, rnd))
+    const exceedRate = Math.max(0.1, jitter(s.exceedRate, 0.15, rnd))
+    const exceeded = Math.round((tested * exceedRate) / 100)
+    return {
+      ...s,
+      period,
+      tested,
+      exceeded,
+      exceedRate: Math.round((exceeded / tested) * 10000) / 100,
+      updatedAt: fmtTime(ts),
+    }
+  })
+}

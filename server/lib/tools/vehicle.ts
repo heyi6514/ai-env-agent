@@ -1,10 +1,10 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
-import { MOCK_VEHICLE_POINTS } from '../../data/mock-monitoring'
+import { getVehicleSnapshot } from '../../data/mock-monitoring'
 
 export interface VehicleQueryResult {
   total: number
-  items: typeof MOCK_VEHICLE_POINTS
+  items: ReturnType<typeof getVehicleSnapshot>
 }
 
 /**
@@ -13,7 +13,7 @@ export interface VehicleQueryResult {
  */
 export const queryVehicleSensing = tool(
   ({ road, area, keyword }) => {
-    let list = [...MOCK_VEHICLE_POINTS]
+    let list = [...getVehicleSnapshot()]
     if (road) list = list.filter(s => s.road.includes(road))
     if (area) list = list.filter(s => s.area.includes(area.replace(/[镇区旗县]/g, '')) || s.area === area)
     if (keyword) {

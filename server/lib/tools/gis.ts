@@ -1,6 +1,7 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
-import { MOCK_SOURCES, type PollutionSource } from '../../data/mock-sources'
+import { getSourcesSnapshot } from '../../data/mock-sources'
+import type { PollutionSource } from '../../data/mock-sources'
 
 export interface GisQueryResult {
   total: number
@@ -17,7 +18,7 @@ function fmt(list: PollutionSource[]): GisQueryResult {
  */
 export const queryPollutionSources = tool(
   ({ town, type, status, keyword }) => {
-    let list = [...MOCK_SOURCES]
+    let list = [...getSourcesSnapshot()]
     if (town) list = list.filter(s => s.town.includes(town.replace(/[镇区旗县]/g, '')) || s.town === town)
     if (type) list = list.filter(s => s.type === type)
     if (status) list = list.filter(s => s.status === status)

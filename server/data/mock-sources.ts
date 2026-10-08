@@ -1,6 +1,10 @@
 // Mock 污染源点位数据（Day 2 用，30 条）
 // 坐标基于内蒙古自治区鄂尔多斯市准格尔旗一带（WGS84 经纬度）
 // 字段设计与 Day 6 地图联动保持一致：type 决定图标分组，status 决定超标红标
+//
+// 基准值内部化，通过 getSourcesSnapshot() 按时间桶抖动生成动态快照
+
+import { bucketSeed, fmtTime, jitter, mulberry32 } from '../lib/simulate'
 export type SourceType = 'air' | 'water' | 'solid'
 export type SourceStatus = '正常' | '超标'
 
@@ -62,7 +66,7 @@ function mk(
 }
 
 // 保证演示组合命中：沙圪堵镇 + 废气 + 超标 至少 2 条；薛家湾镇 + 废水 + 超标 1 条
-export const MOCK_SOURCES: PollutionSource[] = [
+const BASE_SOURCES: PollutionSource[] = [
   mk(0, 'air', 0, '火力发电', 'NOx', 92.5, 50, 111.24, 39.86),
   mk(1, 'air', 0, '煤化工', 'SO2', 68.3, 35, 111.31, 39.82),
   mk(2, 'air', 0, '水泥制造', '颗粒物', 22.1, 20, 111.19, 39.91),
@@ -94,3 +98,27 @@ export const MOCK_SOURCES: PollutionSource[] = [
   mk(28, 'solid', 1, '生活垃圾填埋', '扬尘', 0.9, 1, 111.1, 39.78),
   mk(29, 'water', 5, '食品加工', '悬浮物', 120, 200, 110.88, 39.32),
 ]
+
+/**
+ * 污染源动态快照：排放浓度按 ±10% 抖动并重算超标状态。
+ * 临界护栏：基准值在限值 0.85~1.15 之间的点位不抖 value，防止演示剧本翻车
+ * （例如"沙圪堵镇有哪些超标废气企业"在某个小时突然查空）。
+ */
+export function getSourcesSnapshot(): PollutionSource[] {
+  return BASE_SOURCES.map(s => {
+    const ratio = s.value / s.limit
+    // 临界点位（含基准已超标/接近超标的）保持原值，只刷新时间
+    if (ratio >= 0.85 && ratio <= 1.15) {
+      return { ...s, updatedAt: fmtTime(new Date()) }
+    }
+    const [seed, ts] = bucketSeed(s.id)
+    const rnd = mulberry32(seed)
+    const value = jitter(s.value, 0.1, rnd)
+    return {
+      ...s,
+      value,
+      status: value > s.limit ? '超标' : '正常',
+      updatedAt: fmtTime(ts),
+    }
+  })
+}

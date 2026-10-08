@@ -1,10 +1,10 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
-import { MOCK_WATER_SITES } from '../../data/mock-monitoring'
+import { getWaterSnapshot } from '../../data/mock-monitoring'
 
 export interface WaterQueryResult {
   total: number
-  items: typeof MOCK_WATER_SITES
+  items: ReturnType<typeof getWaterSnapshot>
 }
 
 /**
@@ -14,7 +14,7 @@ export interface WaterQueryResult {
  */
 export const queryWaterQuality = tool(
   ({ kind, river, area, status }) => {
-    let list = [...MOCK_WATER_SITES]
+    let list = [...getWaterSnapshot()]
     if (kind) list = list.filter(s => s.kind === kind)
     if (river) list = list.filter(s => s.river.includes(river))
     if (area) list = list.filter(s => s.area.includes(area.replace(/[镇区旗县]/g, '')) || s.area === area)

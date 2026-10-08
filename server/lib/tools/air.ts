@@ -1,10 +1,10 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
-import { MOCK_AIR_STATIONS } from '../../data/mock-monitoring'
+import { getAirSnapshot } from '../../data/mock-monitoring'
 
 export interface AirQueryResult {
   total: number
-  items: typeof MOCK_AIR_STATIONS
+  items: ReturnType<typeof getAirSnapshot>
 }
 
 /**
@@ -14,7 +14,7 @@ export interface AirQueryResult {
  */
 export const queryAirQuality = tool(
   ({ area, level, keyword }) => {
-    let list = [...MOCK_AIR_STATIONS]
+    let list = [...getAirSnapshot()]
     if (area) list = list.filter(s => s.area.includes(area.replace(/[镇区旗县]/g, '')) || s.area === area)
     if (level) list = list.filter(s => s.level === level)
     if (keyword) {

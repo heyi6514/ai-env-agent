@@ -130,6 +130,21 @@
 
 ---
 
+## Day 2+（2026-10-09）扩展：环境质量监测三工具（提前落地 Day 4 部分）
+
+### ✅ 完成事项
+- 新增 3 个工具：`query_air_quality`（AQI 站点）、`query_water_quality`（河流断面+饮用水源地合并）、`query_vehicle_sensing`（机动车遥测）
+- `server/data/mock-monitoring.ts`：5 个 AQI 站点（含六参数）+ 7 个水环境实体 + 4 个遥测点位
+- `agent.ts` executeTool 从硬编码改为 TOOL_MAP 查表——新工具注册即用，Agent 循环零改动
+- system prompt 同步工具清单（含"固定源/移动源""环境空气/企业废气"边界说明）
+- 多工具路由验收：AQI/水环境/移动源三问三中，入参解析全部正确
+
+### 📐 设计偏差
+1. **按数据域拆工具而非按问题拆**：水环境的"断面+水源地"合并为 1 个工具（kind 参数区分），避免工具数量膨胀与 description 语义稀释
+2. **description 边界声明是路由准确率的关键**：在相邻工具（query_pollution_sources vs query_air_quality）的 description 里互相声明"什么时候不选我"，5 工具路由测试 100% 命中
+
+---
+
 <!--
 每日小节模板（复制使用）：
 

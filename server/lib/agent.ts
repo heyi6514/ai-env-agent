@@ -2,9 +2,13 @@ import { AIMessageChunk } from '@langchain/core/messages'
 import { AIMessage, BaseMessage, ToolMessage } from '@langchain/core/messages'
 import { ChatDeepSeek } from '@langchain/deepseek'
 import { queryPollutionSources } from './tools/gis'
-import type { GisQueryResult } from './tools/gis'
+import { queryAirQuality } from './tools/air'
+import { queryWaterQuality } from './tools/water'
+import { queryVehicleSensing } from './tools/vehicle'
 
-const TOOLS = [queryPollutionSources]
+const TOOLS = [queryPollutionSources, queryAirQuality, queryWaterQuality, queryVehicleSensing]
+
+const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]))
 
 /** Agent 单次提问最多执行的工具轮数，防止模型陷入循环调用 */
 const MAX_TOOL_ROUNDS = 5
@@ -32,13 +36,20 @@ function createModel() {
 }
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<ToolExecution> {
-  if (name !== queryPollutionSources.name) {
+  const t = TOOL_MAP.get(name)
+  if (!t) {
     return { payload: `未知工具：${name}`, summary: '未知工具' }
   }
   try {
-    const payload = await queryPollutionSources.invoke(args)
-    const parsed = JSON.parse(payload) as GisQueryResult
-    return { payload, summary: `返回 ${parsed.total} 条记录` }
+    const payload = await t.invoke(args)
+    let summary = '执行完成'
+    try {
+      const parsed = JSON.parse(payload) as { total?: number }
+      if (typeof parsed.total === 'number') summary = `返回 ${parsed.total} 条记录`
+    } catch {
+      // 非 JSON 结果保持默认 summary
+    }
+    return { payload, summary }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return { payload: `工具执行失败：${msg}`, summary: '执行失败' }

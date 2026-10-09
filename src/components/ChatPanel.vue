@@ -5,10 +5,10 @@ import { useChatStore } from '../stores/chat'
 import MessageItem from './MessageItem.vue'
 
 const SUGGESTIONS = [
-  '帮我介绍一下这个环保智能监管工作台',
-  '用 Markdown 写一段 Python Hello World 示例代码',
-  '归纳一下大气污染的主要来源',
-  '什么是环境保护的“三同时”制度？',
+  '沙圪堵镇有哪些超标废气企业？',
+  '准格尔旗本月水环境质量异常断面',
+  '机动车遥感监测中氮氧化物超标车辆',
+  '生成本周重点污染源执法报告',
 ]
 
 const input = ref('')
@@ -62,6 +62,18 @@ watch(
   () => store.messages.length,
   () => {
     if (stickBottom.value) scrollToBottom()
+  }
+)
+
+// 方案 C：地图点位→对话上下文——弹窗「询问此点位」按钮联动
+// 地图设置 pendingInput → 这里 watch 填入输入框 → 用户补充后发送
+watch(
+  () => store.pendingInput,
+  (text) => {
+    if (!text) return
+    input.value = text
+    // 消费后清除，避免重复触发
+    store.setPendingInput(undefined)
   }
 )
 </script>

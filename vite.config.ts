@@ -5,6 +5,9 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
+  optimizeDeps: {
+    include: ['ol'],
+  },
   server: {
     port: 5173,
     proxy: {

@@ -9,6 +9,38 @@ export interface ChatMessage {
   report?: { filename: string; markdown: string }
 }
 
+/** 会话历史记录（localStorage 持久化，仅存 messages，不含运行时状态） */
+export interface Session {
+  id: string
+  title: string
+  createdAt: number
+  messages: ChatMessage[]
+}
+
+const STORAGE_KEY = 'env-agent-sessions'
+
+function loadSessions(): Session[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    return JSON.parse(raw) as Session[]
+  } catch {
+    return []
+  }
+}
+
+function saveSessions(sessions: Session[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions))
+  } catch {
+    // 忽略 quota 超限等异常
+  }
+}
+
+function genSessionId(): string {
+  return `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
 export interface ToolEvent {
   /** 卡片类型：thought=思考卡片（模型工具调用前的推理文本），tool=工具执行 */
   type: 'thought' | 'tool'
@@ -52,17 +84,39 @@ function triggerDownload(filename: string, markdown: string) {
 }
 
 export const useChatStore = defineStore('chat', {
-  state: () => ({
-    messages: [] as ChatMessage[],
-    /** 当前回答的工具调用事件（推理链路面板数据源，每次提问前清空） */
-    toolEvents: [] as ToolEvent[],
-    /** 当前回答的地图点位（Day 4 协议，每次提问前清空，Day 6 由 MapPanel 渲染） */
-    mapPoints: [] as MapPoint[],
-    /** 地图视口 bounding box [minLon, minLat, maxLon, maxLat] */
-    viewport: undefined as [number, number, number, number] | undefined,
-    sending: false,
-    controller: null as AbortController | null,
-  }),
+  state: () => {
+    // 初始化时从 localStorage 加载历史会话，无则创建一个空会话
+    const sessions = loadSessions()
+    let activeSessionId = ''
+    let messages: ChatMessage[] = []
+    if (sessions.length > 0) {
+      activeSessionId = sessions[0].id
+      messages = [...sessions[0].messages]
+    } else {
+      const id = genSessionId()
+      sessions.push({ id, title: '新对话', createdAt: Date.now(), messages: [] })
+      activeSessionId = id
+    }
+    return {
+      sessions,
+      activeSessionId,
+      messages,
+      /** 当前回答的工具调用事件（推理链路面板数据源，每次提问前清空） */
+      toolEvents: [] as ToolEvent[],
+      /** 当前回答的地图点位（Day 4 协议，每次提问前清空，Day 6 由 MapPanel 渲染） */
+      mapPoints: [] as MapPoint[],
+      /** 地图视口 bounding box [minLon, minLat, maxLon, maxLat] */
+      viewport: undefined as [number, number, number, number] | undefined,
+      /** 方案 C：地图点位→对话上下文——弹窗「询问此点位」设置，
+       *  ChatPanel watch 后填入输入框，消费后清除 */
+      pendingInput: undefined as string | undefined,
+      /** 方案 C：对话→地图——推理面板「在地图查看」设置，
+       *  MapPanel watch 后弹窗居中，消费后清除 */
+      focusedPoint: undefined as MapPoint | undefined,
+      sending: false,
+      controller: null as AbortController | null,
+    }
+  },
   actions: {
     async sendMessage(text: string) {
       const content = text.trim()
@@ -70,9 +124,16 @@ export const useChatStore = defineStore('chat', {
 
       this.messages.push({ role: 'user', content, ts: Date.now() })
       this.messages.push({ role: 'assistant', content: '', ts: Date.now() })
+      // 首条用户消息作为会话标题
+      const s = this.sessions.find(s => s.id === this.activeSessionId)
+      if (s && (s.title === '新对话' || !s.title)) {
+        s.title = content.slice(0, 24) + (content.length > 24 ? '…' : '')
+      }
       this.toolEvents = []
       this.mapPoints = []
       this.viewport = undefined
+      this.focusedPoint = undefined
+      this.pendingInput = undefined
       await this.streamReply()
     },
 
@@ -89,6 +150,8 @@ export const useChatStore = defineStore('chat', {
       this.toolEvents = []
       this.mapPoints = []
       this.viewport = undefined
+      this.focusedPoint = undefined
+      this.pendingInput = undefined
       await this.streamReply()
     },
 
@@ -169,6 +232,12 @@ export const useChatStore = defineStore('chat', {
       } finally {
         this.sending = false
         this.controller = null
+        // 持久化当前会话到 localStorage
+        const s = this.sessions.find(s => s.id === this.activeSessionId)
+        if (s) {
+          s.messages = [...this.messages]
+          saveSessions(this.sessions)
+        }
       }
     },
 
@@ -183,11 +252,91 @@ export const useChatStore = defineStore('chat', {
       this.controller?.abort()
     },
 
-    clear() {
+    // —— 会话历史管理（方案 G）——
+
+    /** 新建会话：当前会话已有内容则存入 sessions，然后创建空会话 */
+    newSession() {
+      if (this.sending) return
       this.controller?.abort()
+      // 当前会话已有消息 → 持久化后新建；空会话 → 直接复用
+      if (this.messages.length > 0) {
+        const cur = this.sessions.find(s => s.id === this.activeSessionId)
+        if (cur) {
+          cur.messages = [...this.messages]
+          saveSessions(this.sessions)
+        }
+        const id = genSessionId()
+        this.sessions.unshift({ id, title: '新对话', createdAt: Date.now(), messages: [] })
+        this.activeSessionId = id
+      } else if (!this.activeSessionId) {
+        const id = genSessionId()
+        this.sessions.unshift({ id, title: '新对话', createdAt: Date.now(), messages: [] })
+        this.activeSessionId = id
+      }
       this.messages = []
+      this.toolEvents = []
       this.mapPoints = []
       this.viewport = undefined
+      this.focusedPoint = undefined
+      this.pendingInput = undefined
+      saveSessions(this.sessions)
+    },
+
+    /** 切换会话：保存当前 → 加载目标 */
+    switchSession(id: string) {
+      if (this.sending || id === this.activeSessionId) return
+      // 持久化当前
+      const cur = this.sessions.find(s => s.id === this.activeSessionId)
+      if (cur) cur.messages = [...this.messages]
+      // 加载目标
+      const target = this.sessions.find(s => s.id === id)
+      if (!target) return
+      this.activeSessionId = id
+      this.messages = [...target.messages]
+      this.toolEvents = []
+      this.mapPoints = []
+      this.viewport = undefined
+      this.focusedPoint = undefined
+      this.pendingInput = undefined
+      saveSessions(this.sessions)
+    },
+
+    /** 删除会话 */
+    deleteSession(id: string) {
+      const idx = this.sessions.findIndex(s => s.id === id)
+      if (idx < 0) return
+      this.sessions.splice(idx, 1)
+      if (this.activeSessionId === id) {
+        if (this.sessions.length > 0) {
+          this.switchSession(this.sessions[0].id)
+        } else {
+          const newId = genSessionId()
+          this.sessions.push({ id: newId, title: '新对话', createdAt: Date.now(), messages: [] })
+          this.activeSessionId = newId
+          this.messages = []
+          this.toolEvents = []
+          this.mapPoints = []
+          this.viewport = undefined
+          this.focusedPoint = undefined
+          this.pendingInput = undefined
+        }
+      }
+      saveSessions(this.sessions)
+    },
+
+    /** 清空当前对话（ChatPanel 清空按钮，语义=新建空会话） */
+    clear() {
+      this.newSession()
+    },
+
+    /** 方案 C：设置焦点点位（对话→地图方向，推理面板"在地图查看"调用） */
+    setFocusedPoint(point: MapPoint | undefined) {
+      this.focusedPoint = point
+    },
+
+    /** 方案 C：设置待填入输入框的文本（地图→对话方向，弹窗"询问此点位"调用） */
+    setPendingInput(text: string | undefined) {
+      this.pendingInput = text
     },
 
     /** 重新下载指定报告（推理面板按钮调用） */

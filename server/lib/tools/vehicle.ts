@@ -1,12 +1,18 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 import { getVehicleSnapshot } from '../../data/mock-monitoring'
+import type { MapPoint } from './gis'
+import { calcViewport } from './gis'
 
 export interface VehicleQueryResult {
   total: number
   items: ReturnType<typeof getVehicleSnapshot>
   /** 数据摘要，供前端推理链路展示数据概况 */
   dataSummary: string
+  /** 地图点位（Day 4 协议，Day 6 由 OpenLayers 渲染） */
+  mapPoints?: MapPoint[]
+  /** 视口 bounding box */
+  viewport?: [number, number, number, number]
 }
 
 function buildSummary(list: ReturnType<typeof getVehicleSnapshot>): string {
@@ -31,6 +37,19 @@ function buildSummary(list: ReturnType<typeof getVehicleSnapshot>): string {
  * 移动源（机动车遥测）查询工具。
  * 移动源与固定源（query_pollution_sources）是污染源两大分类，本工具只管机动车遥测数据。
  */
+/** 将遥测点位映射为地图点位（超标率 ≥5% 标记为超标，突出演示剧本中 G109 沙圪堵段） */
+function toMapPoints(list: ReturnType<typeof getVehicleSnapshot>): MapPoint[] {
+  return list.map(s => ({
+    id: s.id,
+    name: s.name,
+    type: 'vehicle',
+    status: s.exceedRate >= 5 ? '超标' : '正常',
+    lon: s.lon,
+    lat: s.lat,
+    detail: `${s.road}｜检测 ${s.tested}｜超标 ${s.exceeded}（${s.exceedRate}%）｜${s.mainVehicleType}`,
+  }))
+}
+
 export const queryVehicleSensing = tool(
   ({ road, area, keyword }) => {
     let list = [...getVehicleSnapshot()]
@@ -45,7 +64,14 @@ export const queryVehicleSensing = tool(
           s.mainPollutant.toLowerCase().includes(k)
       )
     }
-    const result: VehicleQueryResult = { total: list.length, items: list, dataSummary: buildSummary(list) }
+    const mapPoints = toMapPoints(list)
+    const result: VehicleQueryResult = {
+      total: list.length,
+      items: list,
+      dataSummary: buildSummary(list),
+      mapPoints,
+      viewport: calcViewport(mapPoints),
+    }
     return JSON.stringify(result)
   },
   {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CopyDocument, RefreshRight } from '@element-plus/icons-vue'
+import { CopyDocument, RefreshRight, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import type { ChatMessage } from '../stores/chat'
+import { useChatStore } from '../stores/chat'
 import { renderMarkdown } from '../utils/markdown'
 
 const props = defineProps<{
@@ -10,6 +11,8 @@ const props = defineProps<{
   streaming?: boolean
   canRegenerate?: boolean
 }>()
+
+const store = useChatStore()
 
 const emit = defineEmits<{ regenerate: [] }>()
 
@@ -36,6 +39,21 @@ async function copy() {
       <template v-else>
         <div v-if="msg.role === 'assistant'" class="md-body" v-html="html"></div>
         <div v-else class="plain">{{ msg.content }}</div>
+        <div v-if="msg.report" class="report-card">
+          <el-icon class="report-icon"><Download /></el-icon>
+          <div class="report-info">
+            <div class="report-title">执法检查报告已生成</div>
+            <div class="report-name">{{ msg.report.filename }}</div>
+          </div>
+          <el-button
+            type="primary"
+            size="small"
+            :icon="Download"
+            @click="store.downloadReport(msg.report!)"
+          >
+            下载报告
+          </el-button>
+        </div>
         <div v-if="msg.role === 'assistant' && !streaming && msg.content" class="ops">
           <el-button link size="small" @click="copy">
             <el-icon><CopyDocument /></el-icon>&nbsp;复制
@@ -126,6 +144,36 @@ async function copy() {
     transform: scale(1);
     opacity: 1;
   }
+}
+.report-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--el-color-warning-light-9);
+  border: 1px solid var(--el-color-warning-light-7);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.report-card .report-icon {
+  color: var(--el-color-warning);
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.report-card .report-info {
+  flex: 1;
+  min-width: 0;
+}
+.report-card .report-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-color-warning);
+}
+.report-card .report-name {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  word-break: break-all;
+  margin-top: 2px;
 }
 .ops {
   margin-top: 6px;

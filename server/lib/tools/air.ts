@@ -1,12 +1,18 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 import { getAirSnapshot } from '../../data/mock-monitoring'
+import type { MapPoint } from './gis'
+import { calcViewport } from './gis'
 
 export interface AirQueryResult {
   total: number
   items: ReturnType<typeof getAirSnapshot>
   /** 数据摘要，供前端推理链路展示数据概况 */
   dataSummary: string
+  /** 地图点位（Day 4 协议，Day 6 由 OpenLayers 渲染） */
+  mapPoints?: MapPoint[]
+  /** 视口 bounding box */
+  viewport?: [number, number, number, number]
 }
 
 function buildSummary(list: ReturnType<typeof getAirSnapshot>): string {
@@ -41,6 +47,24 @@ function buildSummary(list: ReturnType<typeof getAirSnapshot>): string {
  * 注意与 query_pollution_sources（企业污染源废气排放）区分：本工具查的是区域环境空气质量，
  * 用户问"空气好不好/AQI 多少/今天空气质量"时选本工具；问"企业废气排放"时选前者。
  */
+/** 空气质量等级 → 是否超标（优/良为正常，轻度及以上为超标） */
+function levelToStatus(level: string): '正常' | '超标' {
+  return level === '优' || level === '良' ? '正常' : '超标'
+}
+
+/** 将监测站映射为地图点位 */
+function toMapPoints(list: ReturnType<typeof getAirSnapshot>): MapPoint[] {
+  return list.map(s => ({
+    id: s.id,
+    name: s.siteName,
+    type: 'airStation',
+    status: levelToStatus(s.level),
+    lon: s.lon,
+    lat: s.lat,
+    detail: `AQI ${s.aqi}｜${s.level}｜首要污染物 ${s.primaryPollutant}`,
+  }))
+}
+
 export const queryAirQuality = tool(
   ({ area, level, keyword }) => {
     let list = [...getAirSnapshot()]
@@ -54,7 +78,14 @@ export const queryAirQuality = tool(
           s.primaryPollutant.toLowerCase().includes(k)
       )
     }
-    const result: AirQueryResult = { total: list.length, items: list, dataSummary: buildSummary(list) }
+    const mapPoints = toMapPoints(list)
+    const result: AirQueryResult = {
+      total: list.length,
+      items: list,
+      dataSummary: buildSummary(list),
+      mapPoints,
+      viewport: calcViewport(mapPoints),
+    }
     return JSON.stringify(result)
   },
   {

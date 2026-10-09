@@ -27,6 +27,8 @@ export interface AirStation {
   aqi: number
   primaryPollutant: string
   level: AqiLevel
+  lon: number
+  lat: number
   updatedAt: string
 }
 
@@ -45,6 +47,8 @@ const BASE_AIR_STATIONS: AirStation[] = [
     aqi: 152,
     primaryPollutant: 'PM2.5',
     level: '轻度污染',
+    lon: 111.69,
+    lat: 39.84,
     updatedAt: '2026-10-09 10:00:00',
   },
   {
@@ -61,6 +65,8 @@ const BASE_AIR_STATIONS: AirStation[] = [
     aqi: 98,
     primaryPollutant: 'O3',
     level: '良',
+    lon: 111.24,
+    lat: 39.87,
     updatedAt: '2026-10-09 10:00:00',
   },
   {
@@ -77,6 +83,8 @@ const BASE_AIR_STATIONS: AirStation[] = [
     aqi: 118,
     primaryPollutant: 'PM2.5',
     level: '轻度污染',
+    lon: 111.62,
+    lat: 39.82,
     updatedAt: '2026-10-09 10:00:00',
   },
   {
@@ -93,6 +101,8 @@ const BASE_AIR_STATIONS: AirStation[] = [
     aqi: 62,
     primaryPollutant: 'PM10',
     level: '良',
+    lon: 111.47,
+    lat: 39.61,
     updatedAt: '2026-10-09 10:00:00',
   },
   {
@@ -109,6 +119,8 @@ const BASE_AIR_STATIONS: AirStation[] = [
     aqi: 45,
     primaryPollutant: 'PM10',
     level: '优',
+    lon: 111.16,
+    lat: 39.86,
     updatedAt: '2026-10-09 10:00:00',
   },
 ]
@@ -255,6 +267,8 @@ export interface VehicleSensingPoint {
   mainVehicleType: string
   /** 主要超标项目 */
   mainPollutant: string
+  lon: number
+  lat: number
   updatedAt: string
 }
 
@@ -270,6 +284,8 @@ const BASE_VEHICLE_POINTS: VehicleSensingPoint[] = [
     exceedRate: 5.76,
     mainVehicleType: '柴油货车',
     mainPollutant: '林格曼黑度',
+    lon: 111.2,
+    lat: 39.85,
     updatedAt: '2026-10-09 09:00:00',
   },
   {
@@ -283,6 +299,8 @@ const BASE_VEHICLE_POINTS: VehicleSensingPoint[] = [
     exceedRate: 2.34,
     mainVehicleType: '柴油货车',
     mainPollutant: 'NOx',
+    lon: 111.7,
+    lat: 39.83,
     updatedAt: '2026-10-09 09:00:00',
   },
   {
@@ -296,6 +314,8 @@ const BASE_VEHICLE_POINTS: VehicleSensingPoint[] = [
     exceedRate: 7.54,
     mainVehicleType: '重型自卸货车',
     mainPollutant: '林格曼黑度',
+    lon: 111.63,
+    lat: 39.82,
     updatedAt: '2026-10-09 09:00:00',
   },
   {
@@ -309,6 +329,8 @@ const BASE_VEHICLE_POINTS: VehicleSensingPoint[] = [
     exceedRate: 1.69,
     mainVehicleType: '轻型柴油车',
     mainPollutant: 'NOx',
+    lon: 111.47,
+    lat: 39.6,
     updatedAt: '2026-10-09 09:00:00',
   },
 ]

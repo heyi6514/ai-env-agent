@@ -1,12 +1,18 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 import { getWaterSnapshot } from '../../data/mock-monitoring'
+import type { MapPoint } from './gis'
+import { calcViewport } from './gis'
 
 export interface WaterQueryResult {
   total: number
   items: ReturnType<typeof getWaterSnapshot>
   /** 数据摘要，供前端推理链路展示数据概况 */
   dataSummary: string
+  /** 地图点位（Day 4 协议，Day 6 由 OpenLayers 渲染） */
+  mapPoints?: MapPoint[]
+  /** 视口 bounding box */
+  viewport?: [number, number, number, number]
 }
 
 function buildSummary(list: ReturnType<typeof getWaterSnapshot>): string {
@@ -30,6 +36,20 @@ function buildSummary(list: ReturnType<typeof getWaterSnapshot>): string {
  * 用 kind 参数区分两类实体（同属水环境数据域，用户问法常混在一起）。
  * 注意与 query_pollution_sources（企业废水排放口）区分：本工具查的是水环境质量（断面/水源地）。
  */
+/** 将水站点映射为地图点位（断面与水源地统一为 waterStation，Day 6 用同色图标） */
+function toMapPoints(list: ReturnType<typeof getWaterSnapshot>): MapPoint[] {
+  return list.map(s => ({
+    id: s.id,
+    name: s.name,
+    type: 'waterStation',
+    // WaterSite.status 用"达标/超标"，MapPoint 统一用"正常/超标"
+    status: s.status === '超标' ? '超标' : '正常',
+    lon: s.lon,
+    lat: s.lat,
+    detail: `${s.kind === 'section' ? '断面' : '水源地'}｜${s.river}｜${s.category}（目标${s.target}）${s.factor !== '—' ? '｜' + s.factor : ''}`,
+  }))
+}
+
 export const queryWaterQuality = tool(
   ({ kind, river, area, status }) => {
     let list = [...getWaterSnapshot()]
@@ -37,7 +57,14 @@ export const queryWaterQuality = tool(
     if (river) list = list.filter(s => s.river.includes(river))
     if (area) list = list.filter(s => s.area.includes(area.replace(/[镇区旗县]/g, '')) || s.area === area)
     if (status) list = list.filter(s => s.status === status)
-    const result: WaterQueryResult = { total: list.length, items: list, dataSummary: buildSummary(list) }
+    const mapPoints = toMapPoints(list)
+    const result: WaterQueryResult = {
+      total: list.length,
+      items: list,
+      dataSummary: buildSummary(list),
+      mapPoints,
+      viewport: calcViewport(mapPoints),
+    }
     return JSON.stringify(result)
   },
   {

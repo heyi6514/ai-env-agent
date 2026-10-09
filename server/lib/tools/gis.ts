@@ -3,11 +3,39 @@ import { z } from 'zod'
 import { getSourcesSnapshot } from '../../data/mock-sources'
 import type { PollutionSource } from '../../data/mock-sources'
 
+/** 地图点位（与前端 useSSE.ts MapPoint 镜像，后端独立定义避免跨端类型依赖） */
+export interface MapPoint {
+  id: string
+  name: string
+  type: 'air' | 'water' | 'solid' | 'airStation' | 'waterStation' | 'vehicle'
+  status: '正常' | '超标'
+  lon: number
+  lat: number
+  detail?: string
+}
+
+/** 由点位坐标计算 bounding box 视口 [minLon, minLat, maxLon, maxLat]。
+ *  单点位退化为 ±0.01 的方框，避免 Day 6 地图缩放过大。空数组返回 undefined。 */
+export function calcViewport(points: { lon: number; lat: number }[]): [number, number, number, number] | undefined {
+  if (points.length === 0) return undefined
+  if (points.length === 1) {
+    const { lon, lat } = points[0]
+    return [lon - 0.01, lat - 0.01, lon + 0.01, lat + 0.01]
+  }
+  const lons = points.map(p => p.lon)
+  const lats = points.map(p => p.lat)
+  return [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)]
+}
+
 export interface GisQueryResult {
   total: number
   items: PollutionSource[]
   /** 数据摘要，供前端推理链路展示数据概况 */
   dataSummary: string
+  /** 地图点位（Day 4 协议，Day 6 由 OpenLayers 渲染） */
+  mapPoints?: MapPoint[]
+  /** 视口 bounding box */
+  viewport?: [number, number, number, number]
 }
 
 function buildSummary(list: PollutionSource[]): string {
@@ -37,8 +65,28 @@ function buildSummary(list: PollutionSource[]): string {
   return `${list.length}个污染源，行业：${topIndustries}，超标 ${overCount} 个，主要污染物：${topPollutants}`
 }
 
+/** 将污染源映射为地图点位（字段归一化，供 Day 6 地图渲染） */
+function toMapPoints(list: PollutionSource[]): MapPoint[] {
+  return list.map(s => ({
+    id: s.id,
+    name: s.name,
+    type: s.type,
+    status: s.status,
+    lon: s.lon,
+    lat: s.lat,
+    detail: `${s.industry}｜${s.pollutant}｜实测 ${s.value}${s.limit ? '/' + s.limit : ''}`,
+  }))
+}
+
 function fmt(list: PollutionSource[]): GisQueryResult {
-  return { total: list.length, items: list, dataSummary: buildSummary(list) }
+  const mapPoints = toMapPoints(list)
+  return {
+    total: list.length,
+    items: list,
+    dataSummary: buildSummary(list),
+    mapPoints,
+    viewport: calcViewport(mapPoints),
+  }
 }
 
 /**

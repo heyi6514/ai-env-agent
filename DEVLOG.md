@@ -253,6 +253,115 @@
 
 ---
 
+## Day 4（2026-10-09）报告导出工具 + map_render SSE 协议 + MapPanel 骨架
+
+### ✅ 完成事项
+- **reportTool 执法报告导出**：`server/lib/tools/report.ts` 拼装结构化 Markdown 执法报告（报告编号/检查依据/数据统计/检查发现/处置建议），Zod schema 强制 `findings.min(1)` 防止空报告，文件名清理不安全字符
+- **report 全链路打通**：agent.ts `onReport` 回调 → chat.ts SSE `report` 事件 → useSSE.ts handler → chat store 挂载到消息 + 工具事件 → MessageItem.vue / ReasoningPanel.vue 双下载入口，用户点击下载（非自动触发）
+- **report P1 漏洞修复（4 个）**：
+  - P1-1：报告编号改纯数字 `202610091430`（符合公文规范），文件名保留连字符 `20261009-1430`（可读性）
+  - P1-2：删除 `ReportResult.total` 死字段
+  - P1-3：`regenerate()` 丢报告——加注释说明"重新生成=旧交付物作废"的合理语义
+  - P1-4：`onToolEnd` fallback 数组为空时报错——加 `toolEvents.length > 0` 判空保护
+- **map_render SSE 事件协议（Day 4 核心）**：
+  - 定义 `MapPoint` 类型（6 类枚举：air/water/solid/airStation/waterStation/vehicle），前后端镜像
+  - 4 个有坐标的工具（gis/air/water/vehicle）返回 `mapPoints[]` + `viewport` bounding box
+  - agent.ts 解析 `parsed.mapPoints` → `onMapRender` 回调，空点位不触发（避免 Day 6 地图闪空视图）
+  - chat.ts 桥接 SSE `map_render` 事件，useSSE.ts 加 `onMapRender` handler
+  - chat store 加 `mapPoints`/`viewport` 状态，多轮工具调用点位累加，sendMessage/regenerate/clear 统一清空
+- **mock 数据补坐标**：`AirStation` 和 `VehicleSensingPoint` 原先缺 lon/lat，补齐后 4 类点位全部可渲染
+- **MapPanel.vue 骨架**：替换 Workbench.vue 右下角 el-empty 占位，骨架阶段用列表验证协议通了（按类型分组 + 状态色 + 视口四至展示），Day 6 接 OpenLayers 时直接读 store.mapPoints
+- **端到端验证**：问"沙圪堵镇超标废气企业" → 收到 map_render 事件，3 个点位，viewport `[111.19, 39.82, 111.31, 39.91]`，点位结构完整
+
+### 🕳 踩坑记录
+
+**坑 1：报告自动下载 vs 用户主动下载**
+- 现象：报告生成后浏览器直接下载 .md 文件，用户没点下载就弹下载框
+- 根因：最初在 onReport 里直接调 `triggerDownload`，不管用户是否需要
+- 解法：改成挂载到消息 + 工具事件，MessageItem/ReasoningPanel 各放一个"下载报告"按钮，用户点击才下载
+- 面试一句话：*"生成交付物和下载交付物要分离——Agent 生成是自动的，但下载是用户主动行为，不能替用户做决定"*
+
+**坑 2：报告编号带连字符不符合公文规范**
+- 现象：报告编号 `环监检〔20261009-1430〕号`，连字符在公文编号里不合规
+- 根因：日期格式化函数只有一个，文件名和报告编号共用导致连字符进了编号
+- 解法：拆成 `fmtReportNo`（纯数字 202610091430）和 `fmtFileDate`（带连字符 20261009-1430），各走各的
+- 面试一句话：*"文件名要可读，公文编号要规范——同一个日期两种格式，不能图省事共用一个格式化函数"*
+
+**坑 3：AirStation 和 VehicleSensingPoint 缺坐标**
+- 现象：做 map_render 协议时发现空气监测站和机动车遥测点没有 lon/lat 字段，无法渲染到地图
+- 根因：Day 2+ 扩展工具时只顾业务字段（AQI/超标率），没预留地图字段
+- 解法：mock-monitoring.ts 的 interface 和基准数据补 lon/lat，坐标基于准格尔旗各乡镇实际位置
+- 面试一句话：*"数据模型设计要前置考虑下游消费方——即便 Day 6 才接地图，Day 4 定协议时就得让数据带坐标，否则协议定了也没数据可传"*
+
+**坑 4：WaterSite.status 与 MapPoint.status 枚举不匹配**
+- 现象：tsc 报 `'"达标"' is not assignable to '"正常"|"超标"'`
+- 根因：水环境业务用"达标/超标"，地图点位统一用"正常/超标"，枚举值不一致
+- 解法：water.ts 的 toMapPoints 里显式映射 `s.status === '超标' ? '超标' : '正常'`
+- 面试一句话：*"不同数据域的状态枚举要归一化——水环境"达标"和污染源"正常"在地图上应该是同一种颜色，归一化不能假设枚举值天然一致"*
+
+**坑 5：onToolEnd fallback 数组为空时报错**
+- 现象：toolEvents 为空时 `this.toolEvents[this.toolEvents.length - 1]` 返回 undefined，后续 `.status` 访问报错
+- 根因：fallback 逻辑没有判空保护
+- 解法：加 `this.toolEvents.length > 0 ?` 前置判断
+- 面试一句话：*"数组索引访问必须先判 length，即便是 fallback 路径——undefined.status 是前端最常见的运行时崩溃来源"*
+
+### 📐 设计偏差（PLAN 没想到的）
+1. **viewport 用 bounding box 而非 center+zoom**：多点查询时点位分散在多个乡镇，fitBounds 比手动算中心点+缩放级别更合理，Day 6 OpenLayers 的 `view.fit(extent)` 直接吃 bbox
+2. **数据归一化放在工具层而非 agent.ts**：4 个有坐标的工具字段名不一致（gis 用 name/type、air 用 siteName/level），让每个工具自己映射成 MapPoint，agent.ts 只透传——避免 agent.ts 出现 if/else 工具名分支，符合单一职责
+3. **mapPoints 累加而非覆盖**：一次提问可能多轮工具调用（先查污染源再查空气质量），点位累加让多个工具的结果在同一张图上叠加展示，比每轮覆盖更符合"一次提问一张图"的语义
+4. **MapPanel 骨架用列表而非空白占位**：Day 4 不装 OpenLayers，但用列表展示点位数据能验证协议全链路通了（type/status/lon/lat/viewport 都有值），Day 6 接地图时只需替换列表为 ol.Map 渲染，store 数据层零改动
+5. **MapPoint.type 6 类枚举覆盖全部点位类型**：Plan 里只说"点位渲染/状态色"，没定义具体类型。实际拆成 6 类（3 种企业污染源 + 2 种环境质量站 + 1 种遥测点），Day 6 可用 6 种图标分组，比单一"污染源"类型更专业
+
+### 🔑 Day 4 参数修正
+- **Plan Day 4 原列 5 项任务全部完成**：monitorTool（Day 2+ 提前落地为 3 工具）、reportTool、四工具接入（实际 6 工具）、callbacks→SSE 桥接、AgentTrace.vue 骨架（实际叫 ReasoningPanel.vue，Day 3 已完成）
+- **新增任务**：map_render SSE 协议 + MapPanel.vue 骨架（Plan §4 定义了协议但没排进 Day 4 任务列表，实际是 Day 4 核心交付物）
+
+---
+
+## Day 5（2026-10-09）推理链路可视化完整实现
+
+### ✅ 完成事项
+- **思考卡片（黄色）**：采用"前端拦截移动文本"方案 — 模型在工具调用前生成的文本先流式显示在聊天区（保留实时体验），`onToolStart` 触发时将该文本从 `reply.content` 移出，作为黄色思考卡片插入 `toolEvents` 数组（排在工具卡片之前），然后清空 `reply.content`。无需改 SSE 协议，仅改 chat store 的 `onToolStart` handler 约 10 行
+- **卡片四色分类**：基于 `type` + `dataSummary` + `error` 自动判定 — 思考(黄 `--el-color-warning`) / 工具(蓝 `--el-color-primary`) / 数据(绿 `--el-color-success`) / 异常(红 `--el-color-danger`)，用 `border-left: 3px solid` + 浅色背景实现
+- **垂直时间轴**：`.timeline::before` 绘制竖线贯穿所有卡片，步骤编号圆从卡片内部移到时间轴线上（`position: absolute`），思考卡片用小圆点替代数字，工具步骤编号仅统计 `type === 'tool'` 跳过思考卡片
+- **JSON 入参/返回折叠展示**：入参从 `key=value` 字符串改为 `JSON.stringify(args, null, 2)` 格式化展示在 `<pre>` 块中，默认折叠点击展开；新增"返回"折叠区块，将 dataSummary / sources / report 三个独立区块统一收拢，默认展开（返回信息比入参更重要）
+- **面板可折叠**：Workbench.vue 两个面板标题栏可点击折叠/展开，`flex` 动态调整（折叠时 `flex: 0 0 auto`，另一面板自动撑满），`collapse-icon` 旋转动画
+- **"在地图查看"按钮联动**：`map_render` SSE 事件增加 `toolId` 字段（agent.ts → chat.ts → useSSE.ts → chat store 全链路贯通），前端标记对应 `ToolEvent.hasMapPoints = true`，按钮 `emit('focus-map')` → Workbench 折叠推理面板 + 展开地图面板 + 闪烁高亮 1.5s
+- **类型检查 + 构建通过**，浏览器端到端验证：黄色思考卡片 → 绿色数据工具卡片 → 时间轴连线 → "在地图查看"按钮联动 → 面板折叠全部 OK
+
+### 🕳 踩坑记录
+
+**坑 1：思考卡片方案选型 — 服务端 agent_thought 事件 vs 前端拦截移动文本**
+- 现象：plan.md §4 定义了 `agent_thought` SSE 事件但从未实现，Day 5 需要决定如何实现思考卡片
+- 根因：服务端方案需要改造 agent.ts 缓冲模型文本，有 tool_calls 时发 `agent_thought` 而非 `message`，但会丢失实时流式体验（文本需等模型响应结束才一次性显示）；且 DeepSeek 工具调用前通常无文本输出，思考卡片经常为空
+- 解法：选前端拦截方案 — 文本先流式显示在聊天区（保留实时体验），`onToolStart` 触发时将文本移入思考卡片并清空 `reply.content`。仅改 chat store 1 个 handler，零服务端事件协议改动
+- 面试一句话：*"Agent 推理可视化要在'实时性'和'结构化'之间取舍——服务端缓冲能精确分类但丢流式体验，前端拦截两者兼得但文本会从聊天区'移走'，视觉上有短暂的文本消失"*
+
+**坑 2：map_render 事件不携带 toolId，"在地图查看"按钮无法关联工具步骤**
+- 现象：Day 4 设计 `map_render` 事件时只有 `points + viewport`，Day 5 的"在地图查看"按钮需要知道哪个工具步骤产生了点位
+- 根因：SSE 事件设计时只考虑了"传什么数据"，没考虑"前端如何回溯关联到具体步骤"
+- 解法：agent.ts `onMapRender` 回调增加 `toolId` 参数，chat.ts SSE 事件加 `id` 字段，useSSE.ts handler 签名加 `toolId`，chat store `onMapRender` 用 `toolId` 查 `toolEvents` 标记 `hasMapPoints = true`
+- 面试一句话：*"SSE 事件设计要预留上下文关联字段——不仅要传'发生了什么'，还要传'是谁产生的'，否则前端无法做事件溯源和交互回溯"*
+
+**坑 3：工具步骤编号在思考卡片插入后错位**
+- 现象：思考卡片插入 `toolEvents` 数组后，工具卡片的步骤编号如果用 `idx + 1` 会把思考卡片也算进去，导致工具编号不连续
+- 根因：`v-for` 的 `idx` 是数组全量索引，包含 thought 和 tool 两种类型
+- 解法：`toolStepNo(idx)` 函数用 `store.toolEvents.slice(0, idx + 1).filter(e => e.type === 'tool').length` 只统计 tool 类型，思考卡片用小圆点替代编号
+- 面试一句话：*"混合类型列表的步骤编号不能直接用数组索引——要么按类型分别编号，要么用 filter 计数，否则插入非步骤项后编号会错位"*
+
+### 📐 设计偏差（PLAN 没想到的）
+1. **卡片颜色基于 dataSummary 有无而非工具类型**：原计划按工具类型分色，实际实现中"数据绿"和"工具蓝"的区分基于 `dataSummary` 字段是否存在 — 有数据摘要的 GIS 工具显示绿色，无数据摘要的工具（如纯 RAG 检索）显示蓝色。更符合"一眼看出这步工具返回了什么类型的数据"的语义
+2. **思考卡片用前端拦截而非服务端 agent_thought 事件**：plan.md §4 定义了 `agent_thought` 事件，但前端拦截方案更轻量（仅改 store 1 个 handler）且保留流式体验，代价是文本会从聊天区"移走"（视觉上有短暂的文本消失再出现在推理面板）。DeepSeek 工具调用前通常无文本，思考卡片出现频率低，视觉影响小
+3. **"在地图查看"按钮联动只做面板展开 + 闪烁高亮**：Day 6 接 OpenLayers 后，按钮可进一步 `view.fit(extent)` zoom 到对应点位，Day 5 先搭好 `toolId` 关联 + `emit('focus-map')` + Workbench 联动的框架
+4. **入参默认折叠、返回默认展开**：用户更关心工具返回了什么数据而非传了什么参数，入参 JSON 默认折叠节省纵向空间，返回区块默认展开突出可解释性
+5. **面板折叠用 flex 而非 v-if**：折叠时 `flex: 0 0 auto` + `v-show` 隐藏内容区（保留 DOM），而非 `v-if` 销毁重建。过渡动画用 `transition: flex 0.3s ease` 实现平滑收展
+
+### 🔑 Day 5 参数修正
+- **Plan Day 5 原列 5 项任务全部完成**：卡片四色分类、JSON 入参/返回折叠 + 垂直时间轴 + 自动滚动、面板可折叠 + 异常红色卡片、trace"在地图查看"按钮联动、四工具全流程链路完整展示验收
+- **额外完成**：思考卡片（plan §4 定义的 agent_thought 事件的轻量替代方案）、map_render 事件增加 toolId 全链路贯通
+
+---
+
 <!--
 每日小节模板（复制使用）：
 

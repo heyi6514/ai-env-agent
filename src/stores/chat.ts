@@ -1,20 +1,28 @@
 import { defineStore } from 'pinia'
-import { fetchSSE, type ToolSource } from '../composables/useSSE'
+import { fetchSSE, type ToolSource, type MapPoint } from '../composables/useSSE'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   ts: number
+  /** 该轮生成的执法报告（仅 report 工具触发时挂载，供消息区下载卡片使用） */
+  report?: { filename: string; markdown: string }
 }
 
 export interface ToolEvent {
+  /** 卡片类型：thought=思考卡片（模型工具调用前的推理文本），tool=工具执行 */
+  type: 'thought' | 'tool'
   id: string
   name: string
+  /** 思考文本，仅 type='thought' 时有值 */
+  text?: string
   args?: unknown
   summary?: string
   sources?: ToolSource[]
   /** GIS 工具返回的数据摘要，RAG 工具为空 */
   dataSummary?: string
+  /** 报告工具生成的报告文件，其他工具为空 */
+  report?: { filename: string; markdown: string }
   status: 'running' | 'done'
   /** 工具执行是否失败（summary 为"执行失败"时标记，用于红色展示） */
   error?: boolean
@@ -22,6 +30,8 @@ export interface ToolEvent {
   startTime: number
   /** 工具耗时（毫秒），结束时填入 */
   duration?: number
+  /** 该工具步骤是否返回了地图点位（"在地图查看"按钮显示用） */
+  hasMapPoints?: boolean
 }
 
 interface UpstreamMessage {
@@ -29,11 +39,27 @@ interface UpstreamMessage {
   content: string
 }
 
+/** 触发浏览器下载 Markdown 文件 */
+function triggerDownload(filename: string, markdown: string) {
+  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  // 延迟回收，避免大文件下载未完成时 URL 已失效
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [] as ChatMessage[],
     /** 当前回答的工具调用事件（推理链路面板数据源，每次提问前清空） */
     toolEvents: [] as ToolEvent[],
+    /** 当前回答的地图点位（Day 4 协议，每次提问前清空，Day 6 由 MapPanel 渲染） */
+    mapPoints: [] as MapPoint[],
+    /** 地图视口 bounding box [minLon, minLat, maxLon, maxLat] */
+    viewport: undefined as [number, number, number, number] | undefined,
     sending: false,
     controller: null as AbortController | null,
   }),
@@ -45,10 +71,14 @@ export const useChatStore = defineStore('chat', {
       this.messages.push({ role: 'user', content, ts: Date.now() })
       this.messages.push({ role: 'assistant', content: '', ts: Date.now() })
       this.toolEvents = []
+      this.mapPoints = []
+      this.viewport = undefined
       await this.streamReply()
     },
 
-    // 丢掉最后一条回复，基于相同历史重新生成
+    // 丢掉最后一条回复，基于相同历史重新生成。
+    // 注意：若旧回复含 report（执法报告），重新生成后报告也会丢失——
+    // 这是合理的"重新生成"语义：用户要求重新回答，旧交付物自然作废。
     async regenerate() {
       if (this.sending) return
       const last = this.messages[this.messages.length - 1]
@@ -57,6 +87,8 @@ export const useChatStore = defineStore('chat', {
       if (history.length === 0 || history[history.length - 1].role !== 'user') return
       this.messages.push({ role: 'assistant', content: '', ts: Date.now() })
       this.toolEvents = []
+      this.mapPoints = []
+      this.viewport = undefined
       await this.streamReply()
     },
 
@@ -77,12 +109,26 @@ export const useChatStore = defineStore('chat', {
               reply.content += chunk
             },
             onToolStart: (id, name, args) => {
-              this.toolEvents.push({ id, name, args, status: 'running', startTime: Date.now() })
+              // 模型在调用工具前生成的文本 → 移入思考卡片
+              // 这些文本先流式显示在聊天区（保留实时体验），
+              // 当工具开始执行时将其从聊天区移出，作为黄色思考卡片展示
+              if (reply.content.trim()) {
+                this.toolEvents.push({
+                  id: `thought_${id}`,
+                  type: 'thought',
+                  name: '',
+                  text: reply.content,
+                  status: 'done',
+                  startTime: Date.now(),
+                })
+                reply.content = ''
+              }
+              this.toolEvents.push({ id, type: 'tool', name, args, status: 'running', startTime: Date.now() })
             },
             onToolEnd: (id, _name, summary, sources, dataSummary) => {
               const ev =
                 this.toolEvents.find(e => e.id === id && e.status === 'running') ??
-                this.toolEvents[this.toolEvents.length - 1]
+                (this.toolEvents.length > 0 ? this.toolEvents[this.toolEvents.length - 1] : undefined)
               if (ev) {
                 ev.status = 'done'
                 ev.summary = summary
@@ -94,6 +140,24 @@ export const useChatStore = defineStore('chat', {
             },
             onError: msg => {
               reply.content += `\n\n> ⚠️ ${msg}`
+            },
+            onReport: (id, filename, markdown) => {
+              // 报告挂到当前正在生成的助手消息上，供消息区下载卡片使用
+              reply.report = { filename, markdown }
+              // 通过 toolId 精确匹配对应工具事件，避免多轮工具场景下挂错
+              const ev = this.toolEvents.find(e => e.id === id)
+              if (ev) ev.report = { filename, markdown }
+            },
+            onMapRender: (toolId, data) => {
+              // 多轮工具调用会多次触发 map_render，点位累加而非覆盖，
+              // 让一次提问涉及的多个工具点位能在同一张图上叠加展示。
+              if (data.points?.length) {
+                this.mapPoints = [...this.mapPoints, ...data.points]
+                // 标记对应工具步骤有地图点位，用于显示"在地图查看"按钮
+                const ev = this.toolEvents.find(e => e.id === toolId)
+                if (ev) ev.hasMapPoints = true
+              }
+              if (data.viewport) this.viewport = data.viewport
             },
           },
           this.controller.signal
@@ -122,6 +186,13 @@ export const useChatStore = defineStore('chat', {
     clear() {
       this.controller?.abort()
       this.messages = []
+      this.mapPoints = []
+      this.viewport = undefined
+    },
+
+    /** 重新下载指定报告（推理面板按钮调用） */
+    downloadReport(report: { filename: string; markdown: string }) {
+      triggerDownload(report.filename, report.markdown)
     },
   },
 })

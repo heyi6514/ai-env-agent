@@ -6,8 +6,9 @@ import { queryAirQuality } from './tools/air'
 import { queryWaterQuality } from './tools/water'
 import { queryVehicleSensing } from './tools/vehicle'
 import { searchKnowledgeBase } from './tools/rag'
+import { generateReport } from './tools/report'
 
-const TOOLS = [queryPollutionSources, queryAirQuality, queryWaterQuality, queryVehicleSensing, searchKnowledgeBase]
+const TOOLS = [queryPollutionSources, queryAirQuality, queryWaterQuality, queryVehicleSensing, searchKnowledgeBase, generateReport]
 
 // 用 string 作为 key 类型，避免工具联合类型导致 invoke 签名不兼容
 const TOOL_MAP = new Map<string, (typeof TOOLS)[number]>(TOOLS.map(t => [t.name, t]))
@@ -19,6 +20,11 @@ export interface AgentCallbacks {
   onToken: (content: string) => void
   onToolStart: (id: string, name: string, args: unknown) => void
   onToolEnd: (id: string, name: string, summary: string, sources?: ToolSource[], dataSummary?: string) => void
+  /** 报告工具生成报告后触发，前端据此下载 .md 文件 */
+  onReport?: (id: string, filename: string, markdown: string) => void
+  /** 工具返回带坐标点位时触发，前端地图联动渲染（Day 4 协议）。
+   *  Day 5 增加 toolId 参数，让前端能精确关联点位与工具步骤（"在地图查看"按钮） */
+  onMapRender?: (toolId: string, points: MapPoint[], viewport?: [number, number, number, number]) => void
 }
 
 /** 工具返回的命中来源（供前端推理链路展示） */
@@ -28,12 +34,28 @@ export interface ToolSource {
   score: number
 }
 
+/** 地图点位（与前端 useSSE.ts MapPoint 镜像） */
+export interface MapPoint {
+  id: string
+  name: string
+  type: 'air' | 'water' | 'solid' | 'airStation' | 'waterStation' | 'vehicle'
+  status: '正常' | '超标'
+  lon: number
+  lat: number
+  detail?: string
+}
+
 export interface ToolExecution {
   payload: string
   summary: string
   sources?: ToolSource[]
   /** 数据摘要：GIS 工具返回的数据概况，RAG 工具为空 */
   dataSummary?: string
+  /** 报告工具生成的报告文件，其他工具为空 */
+  report?: { filename: string; markdown: string }
+  /** 地图点位 + 视口，仅数据类工具附带，RAG/报告工具为空 */
+  mapPoints?: MapPoint[]
+  viewport?: [number, number, number, number]
 }
 
 function createModel() {
@@ -58,15 +80,32 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     let summary = '执行完成'
     let sources: ToolSource[] | undefined
     let dataSummary: string | undefined
+    let report: { filename: string; markdown: string } | undefined
+    let mapPoints: MapPoint[] | undefined
+    let viewport: [number, number, number, number] | undefined
     try {
-      const parsed = JSON.parse(payload) as { total?: number; sources?: ToolSource[]; dataSummary?: string }
-      if (typeof parsed.total === 'number') summary = `返回 ${parsed.total} 条记录`
+      const parsed = JSON.parse(payload) as {
+        total?: number
+        summary?: string
+        sources?: ToolSource[]
+        dataSummary?: string
+        report?: { filename: string; markdown: string }
+        mapPoints?: MapPoint[]
+        viewport?: [number, number, number, number]
+      }
+      if (typeof parsed.summary === 'string') summary = parsed.summary
+      else if (typeof parsed.total === 'number') summary = `返回 ${parsed.total} 条记录`
       if (Array.isArray(parsed.sources)) sources = parsed.sources
       if (typeof parsed.dataSummary === 'string') dataSummary = parsed.dataSummary
+      if (parsed.report) report = parsed.report
+      if (Array.isArray(parsed.mapPoints) && parsed.mapPoints.length > 0) {
+        mapPoints = parsed.mapPoints
+        viewport = parsed.viewport
+      }
     } catch {
       // 非 JSON 结果保持默认 summary
     }
-    return { payload, summary, sources, dataSummary }
+    return { payload, summary, sources, dataSummary, report, mapPoints, viewport }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return { payload: `工具执行失败：${msg}`, summary: '执行失败' }
@@ -119,8 +158,11 @@ export async function runAgent(
     for (const tc of toolCalls) {
       const id = tc.id ?? `call_${round}_${Math.random().toString(36).slice(2, 8)}`
       cb.onToolStart(id, tc.name, tc.args)
-      const { payload, summary, sources, dataSummary } = await executeTool(tc.name, tc.args as Record<string, unknown>)
+      const { payload, summary, sources, dataSummary, report, mapPoints, viewport } = await executeTool(tc.name, tc.args as Record<string, unknown>)
       cb.onToolEnd(id, tc.name, summary, sources, dataSummary)
+      if (report) cb.onReport?.(id, report.filename, report.markdown)
+      // 空点位不触发 map_render，避免 Day 6 地图闪空视图
+      if (mapPoints && mapPoints.length > 0) cb.onMapRender?.(id, mapPoints, viewport)
       current = [...current, new ToolMessage({ content: payload, tool_call_id: id })]
     }
   }

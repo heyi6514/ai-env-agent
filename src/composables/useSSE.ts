@@ -4,6 +4,29 @@ export interface ToolSource {
   score: number
 }
 
+/** 地图点位（Day 4 协议，Day 6 由 OpenLayers 渲染）。
+ *  type 枚举覆盖 6 类点位，决定 Day 6 图标分组与状态色：
+ *  air/water/solid=企业污染源（固定源），airStation/waterStation=环境质量监测站，vehicle=机动车遥测点 */
+export interface MapPoint {
+  id: string
+  name: string
+  type: 'air' | 'water' | 'solid' | 'airStation' | 'waterStation' | 'vehicle'
+  status: '正常' | '超标'
+  lon: number
+  lat: number
+  /** 弹窗内容（一行摘要），Day 6 Overlay 使用 */
+  detail?: string
+}
+
+/** map_render 事件载荷：toolId + 点位 + 视口 bounding box [minLon, minLat, maxLon, maxLat] */
+export interface MapRenderData {
+  /** 产生这批点位的工具调用 ID，用于推理面板"在地图查看"按钮关联 */
+  id: string
+  points: MapPoint[]
+  /** 视口 bounding box，空数组点位时不发本字段 */
+  viewport?: [number, number, number, number]
+}
+
 export interface SSEHandlers {
   onMessage: (content: string) => void
   onError?: (message: string) => void
@@ -11,6 +34,11 @@ export interface SSEHandlers {
   /** Day 2：Agent 工具调用事件（推理链路展示用） */
   onToolStart?: (id: string, name: string, args: unknown) => void
   onToolEnd?: (id: string, name: string, summary: string, sources?: ToolSource[], dataSummary?: string) => void
+  /** Day 4：报告工具生成后触发下载 */
+  onReport?: (id: string, filename: string, markdown: string) => void
+  /** Day 4：工具返回带坐标点位时触发，前端地图联动渲染。
+   *  Day 5：增加 toolId 参数，用于推理面板关联点位与工具步骤 */
+  onMapRender?: (toolId: string, data: MapRenderData) => void
 }
 
 /**
@@ -65,6 +93,9 @@ export async function fetchSSE(
           handlers.onToolStart?.(payload.id, payload.name, payload.args)
         else if (event === 'tool_end')
           handlers.onToolEnd?.(payload.id, payload.name, payload.summary, payload.sources, payload.dataSummary)
+        else if (event === 'report')
+          handlers.onReport?.(payload.id, payload.filename, payload.markdown)
+        else if (event === 'map_render') handlers.onMapRender?.(payload.id, payload as MapRenderData)
       } catch {
         // 忽略非法 JSON 块
       }

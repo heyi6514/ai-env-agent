@@ -25,6 +25,7 @@ const SYSTEM_PROMPT = `你是「环保智能监管工作台」的内置 AI 助�
 - query_water_quality：水环境质量（河流断面水质类别、饮用水源地达标情况）
 - query_vehicle_sensing：机动车遥感监测（移动源，遥测点位超标率、超标车型）
 - search_knowledge_base：环保法规知识库检索（排放标准、法规条款、处罚依据，需上传文档后可用）
+- generate_report：执法检查报告生成（Markdown 格式，触发前端下载。用户要求生成报告时必须调用，需先调数据工具拿真实数据再生成报告）
 
 回答要求：使用简体中文，专业、简洁、条理化，善用 Markdown 列表与表格；面向执法场景，结论先行；数据必须来自工具返回结果，不确定的内容明确说明，不臆测。`
 
@@ -93,6 +94,8 @@ router.post('/chat', async (req, res) => {
         onToolStart: (id, name, args) => send('tool_start', { id, name, args }),
         onToolEnd: (id, name, summary, sources, dataSummary) =>
           send('tool_end', { id, name, summary, sources, dataSummary }),
+        onReport: (id, filename, markdown) => send('report', { id, filename, markdown }),
+        onMapRender: (id, points, viewport) => send('map_render', { id, points, viewport }),
       },
       upstream.signal
     )

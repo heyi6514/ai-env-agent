@@ -22,6 +22,15 @@ const ALLOWED_EXT = /\.(pdf|md|txt)$/i
 const UPLOAD_TIMEOUT_MS = 120_000
 
 /**
+ * 生成 500 错误消息：生产环境隐藏内部详情（err.message 可能含 Pinecone/embedding 服务
+ * 敏感信息），开发环境附带详情便于调试。完整错误始终记录到服务端日志。
+ */
+function errMsg(err: unknown, label: string): string {
+  const detail = process.env.NODE_ENV === 'production' || !(err instanceof Error) ? '' : `：${err.message}`
+  return `${label}${detail}`
+}
+
+/**
  * 修复 multer 中文文件名乱码。
  * multer 解析 multipart 的 filename 字段时默认用 Latin-1 解码，
  * 而浏览器实际上传的是 UTF-8 字节，导致中文变成「æ°´æ±¡」这类乱码。
@@ -79,11 +88,13 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     }
   }, UPLOAD_TIMEOUT_MS)
 
+  // docId 用纯 ASCII（Pinecone vector ID 必须 ASCII）。
+  // 时间戳 + 随机后缀，避免同毫秒上传多个文件时 docId 碰撞导致向量覆盖。
+  // 声明在 try 外：catch 里的失败回滚需要引用它
+  const docId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
   try {
     const isPdf = /\.pdf$/i.test(filename)
-    // docId 用纯 ASCII（Pinecone vector ID 必须 ASCII）。
-    // 时间戳 + 随机后缀，避免同毫秒上传多个文件时 docId 碰撞导致向量覆盖。
-    const docId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const source = filename
 
     let chunks
@@ -105,17 +116,25 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       return
     }
 
+    // 入库前检查超时：若已超时则放弃写入，避免用户收到 504 但文档实际已入库的"幽灵文档"
+    if (timedOut) return
+
     const inserted = await upsertChunks(chunks)
 
     clearTimeout(timer)
-    if (timedOut) return // 超时已响应，不再重复发送
+    if (timedOut) {
+      // 超时发生在入库之后：回滚已写入向量，保证"报错即未入库"的一致性
+      await deleteByDocId(docId).catch(e => console.error('[upload] 超时回滚失败:', e))
+      return
+    }
     res.json({ filename, chunks: inserted })
   } catch (err) {
     clearTimeout(timer)
     if (timedOut) return
-    const msg = err instanceof Error ? err.message : '未知错误'
+    // upsertChunks 分批写入，中途失败可能残留部分向量：按 docId 回滚，保证"报错即未入库"
+    await deleteByDocId(docId).catch(e => console.error('[upload] 失败回滚失败:', e))
     console.error('[upload] 处理失败:', err)
-    res.status(500).json({ message: `文档处理失败：${msg}` })
+    res.status(500).json({ message: errMsg(err, '文档处理失败') })
   }
 })
 
@@ -128,9 +147,8 @@ router.get('/documents', async (_req, res) => {
     const docs = await listDocuments()
     res.json({ documents: docs })
   } catch (err) {
-    const msg = err instanceof Error ? err.message : '未知错误'
     console.error('[documents] 查询失败:', err)
-    res.status(500).json({ message: `查询文档列表失败：${msg}` })
+    res.status(500).json({ message: errMsg(err, '查询文档列表失败') })
   }
 })
 
@@ -148,9 +166,8 @@ router.delete('/documents/:docId', async (req, res) => {
     const deleted = await deleteByDocId(docId)
     res.json({ deleted })
   } catch (err) {
-    const msg = err instanceof Error ? err.message : '未知错误'
     console.error('[documents] 删除失败:', err)
-    res.status(500).json({ message: `删除文档失败：${msg}` })
+    res.status(500).json({ message: errMsg(err, '删除文档失败') })
   }
 })
 

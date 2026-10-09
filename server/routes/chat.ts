@@ -32,6 +32,11 @@ const SYSTEM_PROMPT = `你是「环保智能监管工作台」的内置 AI 助�
 /** 单次请求整体超时（含多轮工具调用） */
 const REQUEST_TIMEOUT_MS = 60_000
 
+/** 历史消息最大条数：超出截取最近 N 条，防止超长历史推高 LLM token 成本 */
+const MAX_HISTORY_MESSAGES = 50
+/** 单条消息最大长度（字符）：拒绝粘贴整篇文档这类超长输入 */
+const MAX_MESSAGE_LENGTH = 10_000
+
 router.post('/chat', async (req, res) => {
   const { messages } = req.body ?? {}
 
@@ -49,6 +54,12 @@ router.post('/chat', async (req, res) => {
   )
   if (history.length === 0) {
     res.status(400).json({ message: 'messages 不能为空' })
+    return
+  }
+
+  // 单条消息长度限制：拒绝超长输入，保护 LLM token 成本
+  if (history.some(m => m.content.length > MAX_MESSAGE_LENGTH)) {
+    res.status(400).json({ message: `单条消息长度不能超过 ${MAX_MESSAGE_LENGTH} 字符` })
     return
   }
 
@@ -80,9 +91,11 @@ router.post('/chat', async (req, res) => {
   const timer = setTimeout(() => upstream.abort(), REQUEST_TIMEOUT_MS)
 
   try {
+    // 历史条数限制：截取最近 N 条（与 ChatGPT 等产品的上下文窗口管理行为一致）
+    const trimmed = history.slice(-MAX_HISTORY_MESSAGES)
     const baseMessages = [
       new SystemMessage(SYSTEM_PROMPT),
-      ...history.map(m =>
+      ...trimmed.map(m =>
         m.role === 'user' ? new HumanMessage(m.content) : new AIMessage(m.content)
       ),
     ]
@@ -104,7 +117,10 @@ router.post('/chat', async (req, res) => {
   } catch (err) {
     if ((err as Error).name !== 'AbortError') {
       console.error('[chat] agent error:', err)
-      send('error', { message: err instanceof Error ? err.message : '服务异常' })
+      // 生产环境不向前端暴露内部错误详情（err.message 可能含 API key/服务拓扑等敏感信息），
+      // 完整错误已记录到服务端日志
+      const detail = process.env.NODE_ENV === 'production' || !(err instanceof Error) ? '' : `：${err.message}`
+      send('error', { message: `服务异常${detail}，请稍后重试` })
       send('done', {})
     } else if (!closed) {
       // 非客户端断开的 abort = 60s 超时

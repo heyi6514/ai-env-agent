@@ -505,6 +505,161 @@
 
 ---
 
+## Day 8（2026-10-10）CI/CD 自动化部署上线（阿里云 ECS + GitHub Actions）
+
+### 🏗 部署架构（最终形态）
+
+```
+开发者: git push origin main
+  ↓
+GitHub Actions（海外 runner，免费）:
+  checkout → pnpm install --frozen-lockfile → vite build（注入 VITE_TIAN_DI_TU_KEY）
+  → rsync 产物（dist/ + server/ + 配置文件）→ ssh 远程: 服务器装依赖 + pm2 reload + 循环健康检查
+  ↓
+阿里云 ECS（8.138.104.215，宝塔面板管理）:
+  nginx（宝塔配 SSL + 强制 HTTPS + 全站反代）→ 127.0.0.1:3000
+  → pm2 常驻 Express（NODE_ENV=production 自托管 dist + SPA fallback）
+  ↓
+面试官访问 https://ai.heyi.pub（域名已备案，cert 由宝塔管理）
+```
+
+### ✅ 完成事项
+- **架构决策：nginx 全站反代 → Node 3000，而非「nginx 托管静态 + 反代 /api」**
+  - 依据：`index.ts` 的 `NODE_ENV=production` 分支已实现 dist 静态托管 + SPA fallback（Day 1 埋的伏笔）；宝塔用户一条反代配置即可全通，且站点根目录不指向服务器源码目录，天然规避 `.env` 被静态服务泄露的风险
+- **目录结构**：`/www/wwwroot/ai.heyi.pub/` = `{dist/, server/, .env, package.json, pnpm-lock.yaml, ecosystem.config.cjs}`；`.env` 只存在于服务器，rsync 永远不触碰
+- **CI 工作流**（`.github/workflows/deploy.yml`）：仅 push main 触发 + `workflow_dispatch` 手动兜底 + `concurrency` 单例防并发部署
+- **密钥分层策略**（安全设计，面试可讲）：
+  - 前端构建期密钥 `VITE_TIAN_DI_TU_KEY` → GitHub Secrets（构建时注入，本来就进 bundle）
+  - 服务端运行时密钥（DeepSeek/硅基流动/Pinecone）→ 只放服务器 `.env`，**不进 CI、不进仓库**
+  - SSH 部署专用密钥对（ed25519，无口令）→ 独立于日常 key，公钥进服务器 authorized_keys，私钥进 GitHub Secrets
+- **pm2 进程管理**：`ecosystem.config.cjs`（cwd 指向站点根，`import 'dotenv/config'` 读根目录 `.env`，与开发环境布局一致）；`max_memory_restart: 512M` 兜底
+- **宝塔 nginx 反代要点**：`proxy_buffering off`（SSE 生死线）、`proxy_http_version 1.1`、`Connection $connection_upgrade`（宝塔 map 变量，普通请求=空、WebSocket=upgrade，两相宜）、`Host $host`（透传真实域名）
+- **服务器环境**：nvm 管理的 Node v20.20.2（unofficial-builds glibc-217 兼容构建）+ pnpm@10 + pm2，全部系统级 PATH 可用
+- **端到端验收全通过**：/api/health 探活 ✓ → 首页 SSE 流式打字机 ✓ → GIS 工具地图点位渲染 ✓
+- **日常上线的最终体验**：`git push origin main` = 部署，约 1-2 分钟全自动完成
+
+### 🕳 踩坑记录（按「发现 → 排查 → 根因 → 解法」完整链路）
+
+**坑 1：SSH 追加公钥报 `Connection closed by ... port 22`，疑似被服务器封禁**
+- 现象：`Get-Content pub | ssh root@host "cat >> authorized_keys"` 在密码提示后连接被断开
+- 排查：先排除环境问题——单独 `ssh root@host` 用密码登录，**成功**，证明没有 fail2ban/防爆破封 IP、没有端口限制
+- 根因：上一条命令密码输错（认证失败被断开）
+- 解法：不退出已登录会话，直接就地 `echo "公钥" >> ~/.ssh/authorized_keys`，绕开再次走 SSH 认证
+- 面试一句话：*"SSH 连不上先分层排查——网络层（ping/端口）、认证层（单独登录验证）、授权层（公钥内容），一条失败的复合命令不能定位根因"*
+
+**坑 2：初始化脚本只检查 node「存在性」不检查「版本」，pnpm@10 撞墙 Node 16**
+- 现象：`pnpm -v` 报 `This version of pnpm requires at least Node.js v18.12. The current version is v16.20.2`
+- 根因：脚本写的 `if ! command -v node`——服务器有宝塔/前人装的 Node 16 就跳过了安装 Node 20；**幂等脚本只查存在性不查版本是个逻辑漏洞**
+- 解法：先 `which node` 确认来源（发现是 nvm），改用 nvm 安装 v20
+- 面试一句话：*"环境初始化脚本要检查'版本满足'而非'命令存在'——旧环境的存在恰恰是最常见的部署陷阱"*
+
+**坑 3：nvm install 成功后 node/npm 全部 `command not found`（npm prefix 冲突）**
+- 现象：`nvm is not compatible with the npm "config" "prefix" option: currently set to ""`，然后 node/npm 找不到
+- 根因：`~/.npmrc` 里残留了一行**空的** `prefix=` 配置；nvm 激活脚本检测到 prefix 就拒绝把版本 bin 目录注入 PATH（防全局包混乱的安全设计）
+- 排查：报错信息直接点名 prefix → `cat ~/.npmrc` 确认 → 按 nvm 提示处理
+- 解法：`nvm use --delete-prefix v20.20.2`（或直接删 `~/.npmrc`）+ `nvm alias default 20`
+- 面试一句话：*"nvm 的版本切换本质是 PATH 注入，任何 npm prefix 残留都会让注入失败——报错信息里 'currently set to \"\"' 说明空值也会触发校验"*
+
+**坑 4（本日最大）：Node 20 二进制报 `GLIBC_2.28 not found`，段错误前夜**
+- 现象：nvm 激活成功后 `node -v` 报 `GLIBC_2.28/GLIBC_2.27/GLIBCXX_3.4.21 not found (required by node)`
+- 排查：`ldd --version` → **glibc 2.17**（Alibaba Cloud Linux 2 / CentOS 7 世代）；官方 Node **18 起要求 glibc ≥ 2.28**，RHEL7 系官方二进制天花板就是 Node 16——这解释了服务器为什么一直躺着一个 Node 16
+- 决策：两条路——① 重装系统（ACL3/Ubuntu 22.04，glibc 2.32+，但宝塔面板+已签 SSL 证书全部重置，代价大）② **unofficial-builds**（nodejs 官方组织维护的旧 glibc 兼容构建，glibc-217 变体）
+- 解法：下载 `node-v20.20.2-linux-x64-glibc-217.tar.xz` → 解压到 `~/.nvm/versions/node/` → 重命名目录让 nvm 识别为 v20.20.2
+- 面试一句话：*"老系统跑新 Node 不是死路——官方 unofficial-builds 提供 glibc-217 兼容构建；GLIBC 报错的本质是二进制动态链接的符号版本要求超出系统 libc"*
+
+**坑 5：手动安装 unofficial-builds 后 `nvm use` 报 need to install（目录名少个前缀）**
+- 现象：解压+移动后 nvm 说 "You need to run nvm install node-v20.20.2-linux-x64-glibc-217"，node 找不到
+- 排查：`ls ~/.nvm/versions/node/` 发现目录还叫 `node-v20.20.2-linux-x64-glibc-217`——**我的 mv 命令源路径漏写了 `node-` 前缀**，mv 静默失败（当时没注意返回值）
+- 解法：按实际目录名重新 `mv` 成 `v20.20.2`，nvm 即识别
+- 教训：mv/tar 这类静默命令要 `&&` 串联或立即 `ls` 验证，不能假设成功
+
+**坑 6：重装后 `node -v` 段错误（Segmentation fault），但 SHA256 校验一致**
+- 现象：目录结构对了、nvm use 成功，node 一跑就 Segmentation fault
+- 排查链：`ldd bin/node | grep "not found"` → 报 `bin/node: No such file or directory` → 说明 **bin 目录是空的**——第一次解压发生在 curl 下载中断之后，tar 对截断的 xz 文件解到一半停止，目录结构建了、二进制没落盘
+- 解法：wget 重新下载（带进度条）→ 与官方 `SHASUMS256.txt` 比对 SHA256（一致）→ `rm -rf` 重解压 → `node -v` 正常
+- 面试一句话：*"Segmentation fault 排查三板斧——ldd 看动态链接、校验和看文件完整性、换版本排除兼容性；下载中断的静默破坏比报错更危险"*
+
+**坑 7：CI 的 ssh 是非交互会话，nvm 不加载，node/pnpm/pm2 全找不到**
+- 根因：nvm 的加载写在 `~/.bashrc` 且被非交互判断短路；GitHub Actions 的 `ssh host 'cmd'` 不产生交互 shell
+- 解法：远程命令首行显式 `source ~/.nvm/nvm.sh`
+- 面试一句话：*"CI 走 SSH 执行远程命令时，环境变量的加载路径和登录 shell 完全不同——bashrc 的非交互短路是 nvm 用户部署 CI 的必踩坑"*
+
+**坑 8（exit 7 连环排查）：CI 健康检查连接拒绝 → pm2 应用根本没起来**
+- 现象：Actions 失败 `exit code 7`
+- 排查思路：**exit 7 是 curl 的"Failed to connect"**（ssh 连接失败才是 255）→ 定位到 `curl 127.0.0.1:3000` 被拒 → 登录服务器 `pm2 ls` 显示 online 但 27MB 内存不对劲 → `pm2 logs` 看到真相：
+
+```
+node_modules/.bin/tsx:2
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
+SyntaxError: missing ) after argument list
+```
+
+- 根因：`.bin/tsx` 是 pnpm 生成的 **shell wrapper 脚本**，而 pm2 fork 模式默认用 **node** 解释 script 字段、不尊重 shebang——node 把 shell 语法当 JS 解析直接炸
+- 解法：ecosystem 的 script 从 `node_modules/.bin/tsx` 改为**真实 JS 入口** `node_modules/tsx/dist/cli.mjs`
+- 面试一句话：*"pm2 的 script 字段会被 node 解释执行，pnpm 的 .bin wrapper 是 shell 脚本——两者相遇必炸，要指向包的真实 JS 入口；'online' 状态只代表进程活着，不代表应用能服务"*
+
+**坑 9：修复后 CI exit 2——服务器 curl 7.29 太老不认 `--retry-connrefused`**
+- 现象：日志 `curl: option --retry-connrefused: is unknown`，exit 2
+- 排查：CI 日志直接点名参数未知 → 服务器 curl 版本 7.29（CentOS 7 世代），该参数 curl 7.52 才引入
+- 解法：不用 curl 自带重试，改写 shell 循环（`for i in $(seq 1 15); do curl ... && break; sleep 2; done`），兼容任何版本
+- 面试一句话：*"给老系统写 CI 脚本要按最低版本能力写——curl 参数级别的兼容性问题，shell 循环永远是最稳的兜底"*
+
+**坑 10：git 推送的网络分裂——不开代理打不开 GitHub，开了代理 push 报错**
+- 现象：浏览器能开 GitHub（走系统代理），git push 报 `Empty reply from server`（TLS 被掐）
+- 根因：**git 命令行不读系统代理设置**；代理开着但 git 仍在裸连
+- 解法：`git config --global http.proxy http://127.0.0.1:32595`（端口按代理软件实际）；代理关闭时必须 `--unset`，否则 git 撞死在本地端口上
+- 进阶：改成 `$env:HTTPS_PROXY=...; git push` 按次注入，配置表保持干净，开/不开代理都有路走
+- 面试一句话：*"系统代理只对遵循系统设置的软件生效，git/curl 这类工具要显式配置；反过来工具级代理配置在代理软件关闭时会变成新的故障点"*
+
+### 🔧 排查方法论沉淀（exit code 速查，本次实战验证）
+
+| 退出码 | 来源 | 含义 |
+|---|---|---|
+| 7 | curl | 连接失败/拒绝（服务没起、端口不对） |
+| 2 | curl / bash | 参数解析错误 / 脚本语法错误 |
+| 255 | ssh | SSH 连接/认证失败 |
+| 23/24 | rsync | 部分传输失败 / 文件消失 |
+
+方法论：**复合命令的失败先拆分验证**（坑 1）；**从退出码反查是哪条命令、哪个层级的失败**（坑 8/9）；**环境类问题先问"版本是多少"再问"装没装"**（坑 2/4）；**静默命令执行后必须显式验证结果**（坑 5/6）。
+
+### 📐 设计偏差（PLAN 没想到的）
+1. **nginx 全站反代而非托管静态**：利用 Day 1 埋的 `NODE_ENV=production` 自托管分支，宝塔侧只配一条反代，配置面最小、`.env` 零暴露
+2. **unofficial-builds 而非重装系统**：保留宝塔+证书现状，用官方组织的 glibc-217 构建解决老系统跑新 Node；代价是构建非官方默认渠道（记录在案，Demo 场景可接受）
+3. **健康检查放在 CI 最后一步而非浏览器验收**：`/api/health`（Day 2 加的探活接口）成为部署自动化的"上线判据"，CI 红绿即部署成败，无人工确认环节
+
+---
+
+## Day 8+（2026-10-10）上线后安全加固（P1 漏洞修复）
+
+### ✅ 完成事项
+- 全项目安全排查：0 个 P0、3 个 P1、3 个 P2，P1 全部当日修复
+- **chat.ts 消息限制**：`MAX_HISTORY_MESSAGES=50`（超出截取最近 N 条，对齐 ChatGPT 上下文窗口管理行为）+ `MAX_MESSAGE_LENGTH=10_000`（单条超限直接 400 拒绝）
+- **错误信息脱敏**：chat.ts / upload.ts 共 4 处 500 响应，生产环境只返回通用提示（完整错误只进服务端日志），开发环境保留 `err.message` 便于调试；upload.ts 提取 `errMsg()` 本地助手统一处理
+- **上传超时竞态修复**：入库前检查 `timedOut` 放弃写入；入库后发现已超时则 `deleteByDocId` 回滚；catch 补中途失败回滚（upsertChunks 分批写入，批次间失败会残留部分向量）。修复后语义统一为"报错即未入库"
+- 验证：服务端 `tsc --noEmit` 通过 + `pnpm build` 通过
+
+### 🕳 踩坑记录
+
+**坑 1：对话接口裸奔——无消息数量/长度限制，token 成本完全不可控**
+- 现象：排查发现 `/api/chat` 只校验 messages 是数组，客户端可发几百条超长消息
+- 根因：公网部署后，任何访客都能构造超长历史请求推高 DeepSeek token 消耗，属于"能被刷钱"级别的接口暴露
+- 解法：双层限制——历史条数静默截断（不影响正常长对话），单条长度硬拒绝（防粘贴整篇文档）
+- 面试一句话：*"LLM 应用的接口限流有两层：调用频率层（rate limit）和 token 消耗层（消息数×长度），后者常被忽略但直接等于钱"*
+
+**坑 2：err.message 直接发前端——错误响应成了信息泄露通道**
+- 现象：chat/upload 路由把 `err.message` 原样写进响应，Pinecone/DeepSeek 的报错文本可能含 index 名、API 地址甚至 key 片段
+- 根因：开发期这么写是为了调试方便，但代码直接带进了生产
+- 解法：按 `NODE_ENV` 分流——生产只回通用提示，详细错误只进服务端日志；upload.ts 提取 `errMsg()` 助手消除三处重复
+- 面试一句话：*"错误响应是对外接口，要按'最小信息披露'原则设计；调试便利性应该体现在日志里，而不是响应体里"*
+
+**坑 3：上传超时返回 504，但文档已悄悄入库（幽灵文档）**
+- 现象：120s 超时后用户看到"处理超时"，但异步流程继续跑完 upsert，刷新知识库列表文档赫然在列——用户以为没传上又传一遍，数据重复
+- 根因：超时逻辑只做了"响应一次"，没有中断后续写入；且 upsertChunks 分批写入，批次间失败还会残留半篇文档
+- 解法：三个闸门——①入库前查 timedOut 放弃写入 ②入库后发现已超时则 deleteByDocId 回滚 ③catch 统一回滚中途失败的分批残留。为此把 docId 声明提升到 try 块外（catch 要能引用）
+- 面试一句话：*"异步任务+超时响应的组合必须回答'超时后任务到哪一步了'——要么超时即中断，要么完成后回滚，保证'报错即未生效'的最终一致性"*
+
+---
+
 <!--
 每日小节模板（复制使用）：
 

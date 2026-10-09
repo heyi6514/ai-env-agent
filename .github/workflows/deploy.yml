@@ -1,0 +1,76 @@
+name: Deploy
+
+# 只有 push 到 main 或手动触发才部署（分支即环境：main = 线上版本）
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一时间只允许一个部署在跑，新的 push 自动取消旧的
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # package.json 没有 packageManager 字段，这里显式指定 pnpm 10
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # VITE_ 前缀变量是构建期注入前端的；服务端密钥不进 CI，只放服务器 .env
+      - name: Build frontend
+        run: pnpm build
+        env:
+          VITE_TIAN_DI_TU_KEY: ${{ secrets.VITE_TIAN_DI_TU_KEY }}
+
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # 记录服务器指纹，避免每次连接交互确认
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts
+
+      # 产物同步：dist 全量替换；server 源码同步但 --exclude 保护服务器上的 node_modules
+      # .env / api-key.md 不在 git 仓库里，天然不会被同步
+      - name: Rsync artifacts
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          rsync -az --delete dist/ $SERVER_USER@$SERVER_HOST:/www/wwwroot/ai.heyi.pub/dist/
+          rsync -az --delete --exclude node_modules server/ $SERVER_USER@$SERVER_HOST:/www/wwwroot/ai.heyi.pub/server/
+          rsync -az package.json pnpm-lock.yaml ecosystem.config.cjs $SERVER_USER@$SERVER_HOST:/www/wwwroot/ai.heyi.pub/
+
+      - name: Install, restart, health check
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          ssh $SERVER_USER@$SERVER_HOST '
+            set -e
+            # 服务器用 nvm 管理 Node；Actions 的 ssh 是非交互会话，.bashrc 不加载 nvm，必须显式 source
+            source ~/.nvm/nvm.sh
+            cd /www/wwwroot/ai.heyi.pub
+            pnpm install --frozen-lockfile
+            # 首次部署 reload 会因进程不存在而失败，用 start 兜底
+            pm2 reload ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+            pm2 save
+            curl -fsS http://127.0.0.1:3000/api/health
+          '

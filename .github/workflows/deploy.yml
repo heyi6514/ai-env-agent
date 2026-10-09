@@ -72,5 +72,6 @@ jobs:
             # 首次部署 reload 会因进程不存在而失败，用 start 兜底
             pm2 reload ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
             pm2 save
-            curl -fsS http://127.0.0.1:3000/api/health
+            # pm2 start 异步生效，curl 加连接拒绝重试（最多等 ~30s 应用起来）
+            curl -fsS --retry 15 --retry-connrefused --retry-delay 2 http://127.0.0.1:3000/api/health
           '
